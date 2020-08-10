@@ -1,0 +1,6 @@
+plugin "beancount.plugins.auto_accounts"
+
+2000-01-01 open Liabilities:CreditA
+  plaid_account_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+2000-01-01 open Liabilities:CreditB
+  plaid_account_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

@@ -1,0 +1,32 @@
+[
+  {
+    "account_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "balances": {
+      "available": 4567,
+      "current": 1234.12,
+      "iso_currency_code": "USD",
+      "limit": 8800,
+      "unofficial_currency_code": null
+    },
+    "mask": "1234",
+    "name": "Person A",
+    "official_name": "It is a Credit Card",
+    "subtype": "credit card",
+    "type": "credit"
+  },
+  {
+    "account_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "balances": {
+      "available": 1000,
+      "current": -50,
+      "iso_currency_code": "USD",
+      "limit": 1234,
+      "unofficial_currency_code": null
+    },
+    "mask": "2345",
+    "name": "Person B",
+    "official_name": "Yep Another Card",
+    "subtype": "credit card",
+    "type": "credit"
+  }
+]

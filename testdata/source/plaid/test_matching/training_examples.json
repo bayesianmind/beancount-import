@@ -1,0 +1,41 @@
+[
+  [
+    {
+      "amount": "250.00 USD",
+      "date": "2020-07-27",
+      "key_value_pairs": {
+        "account_owner": "Person A",
+        "category": "Transfer, Payroll",
+        "source_desc": "AUTOPAY PAYMENT - THANK YOU"
+      },
+      "source_account": "Liabilities:CreditA"
+    },
+    "Assets:Checking"
+  ],
+  [
+    {
+      "amount": "-7.22 USD",
+      "date": "2020-07-29",
+      "key_value_pairs": {
+        "account_owner": "Person A",
+        "category": "Travel, Gas Stations",
+        "source_desc": "Chevron"
+      },
+      "source_account": "Liabilities:CreditA"
+    },
+    "Expenses:Auto:Gas"
+  ],
+  [
+    {
+      "amount": "-45.44 USD",
+      "date": "2020-07-29",
+      "key_value_pairs": {
+        "account_owner": "Person B",
+        "category": "Travel, Gas Stations",
+        "source_desc": "Chevron"
+      },
+      "source_account": "Liabilities:CreditB"
+    },
+    "Expenses:Auto:Gas"
+  ]
+]

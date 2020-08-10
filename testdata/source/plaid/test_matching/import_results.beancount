@@ -1,0 +1,43 @@
+;; date: 2020-07-29
+;; info: {"filename": "<testdata>/2020-07-26_2020-07-28.transactions.txt", "type": "text/plain"}
+
+; features: [
+;             {
+;               "amount": "-45.44 USD",
+;               "date": "2020-07-29",
+;               "key_value_pairs": {
+;                 "account_owner": "Person B",
+;                 "category": "Travel, Gas Stations",
+;                 "source_desc": "Chevron"
+;               },
+;               "source_account": "Liabilities:CreditB"
+;             }
+;           ]
+2020-07-29 * "Chevron" "Chevron"
+  Liabilities:CreditB  -45.44 USD
+    account_owner: "Person B"
+    category: "Travel, Gas Stations"
+    date: 2020-07-29
+    plaid_transaction_id: "transactionssljsdlkfjslkdfjslkdjflksd"
+    source_desc: "Chevron"
+  Expenses:FIXME        45.44 USD
+
+;; date: 2020-08-02
+;; info: {"filename": "<testdata>/2020-08-02.bal.txt", "type": "text/plain"}
+
+2020-08-02 balance Liabilities:CreditA                             1234.1199999999998908606357872486114501953125 USD
+
+;; date: 2020-08-02
+;; info: {"filename": "<testdata>/2020-08-02.bal.txt", "type": "text/plain"}
+
+2020-08-02 balance Liabilities:CreditB                             -50 USD
+
+;; date: 2020-08-03
+;; info: {"filename": "<testdata>/2020-08-03.bal.txt", "type": "text/plain"}
+
+2020-08-03 balance Liabilities:CreditA                             1534.1199999999998908606357872486114501953125 USD
+
+;; date: 2020-08-03
+;; info: {"filename": "<testdata>/2020-08-03.bal.txt", "type": "text/plain"}
+
+2020-08-03 balance Liabilities:CreditB                             55 USD

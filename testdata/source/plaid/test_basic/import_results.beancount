@@ -1,0 +1,91 @@
+;; date: 2020-07-27
+;; info: {"filename": "<testdata>/2020-07-26_2020-07-28.transactions.txt", "type": "text/plain"}
+
+; features: [
+;             {
+;               "amount": "250.00 USD",
+;               "date": "2020-07-27",
+;               "key_value_pairs": {
+;                 "account_owner": "Person A",
+;                 "category": "Transfer, Payroll",
+;                 "source_desc": "AUTOPAY PAYMENT - THANK YOU"
+;               },
+;               "source_account": "Liabilities:CreditA"
+;             }
+;           ]
+2020-07-27 * "AUTOPAY PAYMENT - THANK YOU"
+  Liabilities:CreditA   250.00 USD
+    account_owner: "Person A"
+    category: "Transfer, Payroll"
+    date: 2020-07-27
+    plaid_transaction_id: "aaaaaaaaaaackcccCCCCcccccccccccccceor"
+    source_desc: "AUTOPAY PAYMENT - THANK YOU"
+  Expenses:FIXME       -250.00 USD
+
+;; date: 2020-07-29
+;; info: {"filename": "<testdata>/2020-07-26_2020-07-28.transactions.txt", "type": "text/plain"}
+
+; features: [
+;             {
+;               "amount": "-7.22 USD",
+;               "date": "2020-07-29",
+;               "key_value_pairs": {
+;                 "account_owner": "Person A",
+;                 "category": "Travel, Gas Stations",
+;                 "source_desc": "Chevron"
+;               },
+;               "source_account": "Liabilities:CreditA"
+;             }
+;           ]
+2020-07-29 * "Chevron" "Chevron"
+  Liabilities:CreditA  -7.22 USD
+    account_owner: "Person A"
+    category: "Travel, Gas Stations"
+    date: 2020-07-29
+    plaid_transaction_id: "amazingtransactionid123wow5890201cool"
+    source_desc: "Chevron"
+  Expenses:FIXME        7.22 USD
+
+;; date: 2020-07-29
+;; info: {"filename": "<testdata>/2020-07-26_2020-07-28.transactions.txt", "type": "text/plain"}
+
+; features: [
+;             {
+;               "amount": "-45.44 USD",
+;               "date": "2020-07-29",
+;               "key_value_pairs": {
+;                 "account_owner": "Person B",
+;                 "category": "Travel, Gas Stations",
+;                 "source_desc": "Chevron"
+;               },
+;               "source_account": "Liabilities:CreditB"
+;             }
+;           ]
+2020-07-29 * "Chevron" "Chevron"
+  Liabilities:CreditB  -45.44 USD
+    account_owner: "Person B"
+    category: "Travel, Gas Stations"
+    date: 2020-07-29
+    plaid_transaction_id: "transactionssljsdlkfjslkdfjslkdjflksd"
+    source_desc: "Chevron"
+  Expenses:FIXME        45.44 USD
+
+;; date: 2020-08-02
+;; info: {"filename": "<testdata>/2020-08-02.bal.txt", "type": "text/plain"}
+
+2020-08-02 balance Liabilities:CreditA                             1234.1199999999998908606357872486114501953125 USD
+
+;; date: 2020-08-02
+;; info: {"filename": "<testdata>/2020-08-02.bal.txt", "type": "text/plain"}
+
+2020-08-02 balance Liabilities:CreditB                             -50 USD
+
+;; date: 2020-08-03
+;; info: {"filename": "<testdata>/2020-08-03.bal.txt", "type": "text/plain"}
+
+2020-08-03 balance Liabilities:CreditA                             1534.1199999999998908606357872486114501953125 USD
+
+;; date: 2020-08-03
+;; info: {"filename": "<testdata>/2020-08-03.bal.txt", "type": "text/plain"}
+
+2020-08-03 balance Liabilities:CreditB                             55 USD

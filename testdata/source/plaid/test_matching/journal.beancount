@@ -1,0 +1,34 @@
+plugin "beancount.plugins.auto_accounts"
+
+2000-01-01 open Liabilities:CreditA
+  plaid_account_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+2000-01-01 open Liabilities:CreditB
+  plaid_account_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+2020-07-27 * "AUTOPAY PAYMENT - THANK YOU"
+  Liabilities:CreditA   250.00 USD
+    account_owner: "Person A"
+    category: "Transfer, Payroll"
+    date: 2020-07-27
+    plaid_transaction_id: "aaaaaaaaaaackcccCCCCcccccccccccccceor"
+    source_desc: "AUTOPAY PAYMENT - THANK YOU"
+    cleared: TRUE
+  Assets:Checking       -250.00 USD
+
+2020-07-29 * "Chevron" "Chevron"
+  Liabilities:CreditA  -7.22 USD
+    account_owner: "Person A"
+    category: "Travel, Gas Stations"
+    date: 2020-07-29
+    plaid_transaction_id: "amazingtransactionid123wow5890201cool"
+    source_desc: "Chevron"
+    cleared: TRUE
+  Expenses:Auto:Gas        7.22 USD
+
+2020-07-29 * "Chevron" "Chevron"
+  Liabilities:CreditB  -45.44 USD
+    account_owner: "Person B"
+    category: "Travel, Gas Stations"
+    date: 2020-07-29
+    source_desc: "Chevron"
+  Expenses:Auto:Gas        45.44 USD

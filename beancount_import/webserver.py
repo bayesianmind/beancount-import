@@ -214,6 +214,14 @@ data_convert_functions = {
 }
 
 
+class FilterHandler(tornado.web.RequestHandler):
+    def post(self):
+        msg = json.loads(self.request.body)
+        self.application.handle_filter(msg)
+        self.set_header('Content-Type', 'application/json')
+        self.write(json.dumps(None).encode())
+
+
 class GetDataHandler(tornado.web.RequestHandler):
     def get(self, data_type, generation, begin_index, end_index):
         begin_index = int(begin_index)
@@ -265,7 +273,6 @@ class SkipHandler(tornado.web.RequestHandler):
         self.application.handle_skip(msg)
         self.set_header('Content-Type', 'application/json')
         self.write(json.dumps(None).encode())
-
 
 class RetrainHandler(tornado.web.RequestHandler):
     def post(self):
@@ -424,6 +431,7 @@ class Application(tornado.web.Application):
             (r'/%s/(errors|pending|invalid|uncleared)/([^/]*)/(\d+)-(\d+)' %
              secret_key, GetDataHandler),
             (r'/%s/websocket' % secret_key, WebSocketHandler),
+            (r'/%s/filter' % secret_key, FilterHandler),
             (r'/%s/get_file' % secret_key, GetFileHandler),
             (r'/%s/change_candidate' % secret_key, ChangeCandidateHandler),
             (r'/%s/select_candidate' % secret_key, SelectCandidateHandler),
@@ -596,6 +604,12 @@ class Application(tornado.web.Application):
                 self.set_state_force(candidates=self.next_candidates)
         except:
             traceback.print_exc()
+
+    def handle_filter(self, msg):
+        filter = msg['filter']
+        loaded_reconciler = self.reconciler.loaded_future.result()
+        loaded_reconciler.set_filter(filter)
+        self.get_next_candidates(new_pending=True)
 
     def handle_select_candidate(self, msg):
         try:

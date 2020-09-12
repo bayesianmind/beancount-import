@@ -114,6 +114,7 @@ interface AppState extends Partial<ServerState> {
   journalDirty: boolean;
   selectedTab: number;
   selectedDataTab: number;
+  filterText: string;
 }
 
 class AppComponent
@@ -191,7 +192,8 @@ class AppComponent
   state: AppState = {
     ...this.props.serverConnection.state,
     journalDirty: false,
-    ...this.getSelectedTabsFromUrl()
+    ...this.getSelectedTabsFromUrl(),
+    filterText: ""
   };
 
   selectFile = (
@@ -335,6 +337,10 @@ class AppComponent
                     <Tab>Source data</Tab>
                   </TabList>
                   <AppTabPanel>
+                        <FilterBar
+                            filterText={this.state.filterText}
+                            onChange={this.handleFilterTextChange}
+                        />
                     {this.state.pending != null && (
                       <PendingEntriesComponent
                         selectedIndex={this.state.pending_index!}
@@ -367,6 +373,11 @@ class AppComponent
     );
   }
 
+  private handleFilterTextChange = (filterText: string) => {
+  this.setState({filterText: filterText});
+  this.props.serverConnection.filter(filterText);
+  }
+
   private handleSelectPending = (index: number) => {
     this.setState({ selectedTab: TabKeys.candidates });
     this.props.serverConnection.skipTo(index);
@@ -381,6 +392,29 @@ class AppComponent
     this.pendingHighlightState.set(index);
     this.pendingListState.scrollState.scrollToIndex(index);
   };
+}
+
+class FilterBar extends React.PureComponent<{
+  filterText: string;
+  onChange: (filterText: string) => void;
+}> {
+
+  private handleFilterTextChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    this.props.onChange(e.target.value);
+  }
+
+  render() {
+    return (
+      <form>
+        <input
+          type="text"
+          placeholder="Filter..."
+          value={this.props.filterText}
+          onChange={this.handleFilterTextChange}
+        />
+      </form>
+    );
+  }
 }
 
 const root = document.createElement("div");

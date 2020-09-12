@@ -161,6 +161,11 @@ export interface ServerState {
   invalid: GenerationAndCount | null;
 }
 
+interface FilterMessage {
+  type: "filter";
+  value: { filter: string; };
+}
+
 interface SkipMessage {
   type: "skip";
   value: { generation: number; index: number };
@@ -214,6 +219,7 @@ interface SetFileContentsMessage {
 }
 
 type ServerAction =
+  | FilterMessage
   | SkipMessage
   | RetrainMessage
   | ChangeCandidateMessage
@@ -491,6 +497,10 @@ export class ServerConnection {
 
   send(message: ServerAction) {
     this.ws.send(JSON.stringify(message));
+  }
+
+  filter(filter: string) {
+    return executeServerCommand("filter", { filter: filter });
   }
 
   skipBy(amount: number) {

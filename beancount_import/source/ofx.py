@@ -916,7 +916,8 @@ class ParsedOfxStatement(object):
                 units = normalize_fraction(raw.units)
                 if quantity_round_digits is not None:
                     units = round(units, quantity_round_digits)
-                unitprice = normalize_fraction(raw.unitprice)
+                unitprice = None
+                if raw.unitprice: unitprice = normalize_fraction(raw.unitprice)
 
                 cost_spec = None
                 price = None
@@ -992,7 +993,7 @@ class ParsedOfxStatement(object):
             # Compute total amount.
             if raw.trantype == 'TRANSFER':
                 assert total is None
-                if unitprice != ZERO:
+                if unitprice and unitprice != ZERO:
                     total = -(units * unitprice)
             elif raw.trantype in STOCK_BUY_SELL_TYPES:
                 assert total is not None

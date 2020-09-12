@@ -385,6 +385,7 @@ class LoadedReconciler(object):
             is_cleared=self.is_posting_cleared,
             metadata_keys=frozenset([matching.CHECK_KEY]),
         )
+        self.filter_text = ""
 
         # Set of ids of transactions pending import.  Used to determine whether a transaction found
         # in the posting_db is an existing or pending transaction.
@@ -571,8 +572,16 @@ class LoadedReconciler(object):
         self.uncleared_postings = []  # type: List[Tuple[Transaction, Posting]]
         self._get_uncleared_postings()
 
+        import_results.sort(key=lambda pendingEntry: pendingEntry.date)
+
         self.pending_data = import_results
+        self.full_pending_data = import_results
         self.reconciler.log_status('Done loading')
+
+    def set_filter(self, filter: str):
+        self.filter_text = filter
+        self.pending_data = [ p for p in self.full_pending_data if
+                              self._match_candidate(p) ]
 
     def _get_fixme_transactions(self):
         output = []
@@ -858,6 +867,30 @@ class LoadedReconciler(object):
                 sources=self.sources,
             )
         return result
+
+    def _match_candidate(self, pending: PendingEntry):
+        if not self.filter_text:
+            return True
+        filter = self.filter_text.lower()
+
+        def match(field: Any):
+            if not field: return False
+            return filter in str(field).lower()
+
+        if pending.source and match(pending.source.name):
+            return True
+        for tran in pending.entries:
+            if not isinstance(tran, Transaction):
+                # assume we only want transactions when filtering
+                continue
+            if match(tran.narration) or match(tran.payee):
+                return True
+            if match(tran.date.isoformat()):
+                return True
+            for posting in tran.postings:
+                if match(posting.units) or match(posting.account):
+                    return True
+        return False
 
     def get_next_candidates(self, skip_ids: Optional[Dict[str, int]] = None):
         if self.pending_data:

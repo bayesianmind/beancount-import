@@ -160,8 +160,7 @@ def _make_import_result(entry) -> ImportResult:
             meta["account_owner"] = entry['account_owner']
         if entry['category']:
             meta["category"] = ", ".join(entry['category'])
-        if not(entry['pending'] and bool(entry['pending'])):
-            meta["source_desc"] = entry['name']
+        meta["source_desc"] = entry['name']
         sign = -1
         amount = Amount(number=sign * round(D(entry['amount']), 2),
                         currency=entry['iso_currency_code']
@@ -223,6 +222,7 @@ class PlaidSource(Source):
         self.filenames = directory
 
         self.plaid_entries = []
+        self.name_suffix = os.path.basename(directory)
         for file in os.listdir(directory):
             if not file.endswith(".txt"):
                 continue
@@ -236,15 +236,23 @@ class PlaidSource(Source):
             journal.accounts, METADATA_ACCT_ID)
         missing_accounts = set()  # type: Set[str]
         seen_trans_ids = get_transaction_ids_seen(journal)
+        # dedupes pending transactions from multiple files
+        used_trans_ids = {}
 
         for entry in self.plaid_entries:
+            if entry.get('pending') and bool(entry.get('pending')):
+                # skip pending transactions until they clear
+                continue
             if entry.get('transaction_id') in seen_trans_ids:
+                continue
+            if entry.get('transaction_id') in used_trans_ids:
                 continue
             account_id = plaid_id_to_account.get(entry['account_id'])
             if not account_id:
                 missing_accounts.add(entry['account_id'])
                 continue
             entry["account"] = account_id
+            used_trans_ids[entry.get('transaction_id')] = None
             results.add_accounts(account_to_plaid_id.keys())
             results.add_pending_entry(_make_import_result(entry))
 
@@ -269,7 +277,7 @@ class PlaidSource(Source):
 
     @property
     def name(self):
-        return 'plaid'
+        return 'plaid_' + self.name_suffix
 
 
 def load(spec, log_status):

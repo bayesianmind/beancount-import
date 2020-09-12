@@ -28,6 +28,7 @@ setup(
     python_requires='>=3.5',
     install_requires=[
         'beancount>=2.1.3',
+        'beautifulsoup4',
         'tornado',
         'numpy',
         'scipy',

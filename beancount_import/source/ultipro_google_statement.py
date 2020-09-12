@@ -1,5 +1,5 @@
 """Parses a Google employee PDF pay statement from Ultipro."""
-
+import os
 from typing import NamedTuple, Dict, Any, List, Optional, Tuple, Union, Callable, Match
 import datetime
 import collections
@@ -295,7 +295,11 @@ def parse(text: str) -> ParseResult:
 
 
 def parse_filename(path: str):
-    text = subprocess.check_output(['pdftotext', '-raw', path, '-']).decode()
+    pdftotext = ['pdftotext']
+    if os.name == 'nt':
+       pdftotext = ['wsl.exe', 'pdftotext']
+    pdftotext.extend(['-raw', path, '-'])
+    text = subprocess.check_output(pdftotext).decode()
     return parse(text)
 
 

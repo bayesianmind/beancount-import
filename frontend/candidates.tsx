@@ -588,9 +588,9 @@ export class CandidatesComponent extends React.PureComponent<
           showInEditor: event.shiftKey
         });
         break;
-      case "i":
-        this.ignoreCandidate(event.shiftKey);
-        break;
+      // case "i":
+      //  this.ignoreCandidate(event.shiftKey);
+      //  break;
       case "#":
         this.editCurrentTransaction("tag");
         break;

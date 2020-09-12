@@ -80,8 +80,13 @@ pretax_adjustment_fields_pattern = ('(?:' + '|'.join([
     '(?:.*) Discount',
     'Gift[ -]Wrap',
 ]) + ') *:')
-posttax_adjustment_fields_pattern = r'Gift Card Amount:|Rewards Points:|Tip [(]optional[)]:|Recycle Fee \$X'
-
+posttax_adjustment_fields_pattern = ('(?:' + '|'.join([
+    'Gift Card Amount',
+    'Rewards Points',
+    'Recycle Fee',
+    'Tip [(]optional[)]',
+    'Amazon Gift Cards',
+]) + ')\s*:')
 
 def to_json(obj):
     if hasattr(obj, '_asdict'):
@@ -569,12 +574,16 @@ def parse_digital_order_invoice(path: str) -> Optional[Order]:
     item_rows = items_ordered_header.find_next_siblings('tr')
     items = []
 
-    other_fields_td = None
+    order_summary_tds = soup.find_all(
+        lambda node: node.name == "td" and "Total for this Order" in node.text
+    )
+    # the smallest one is the innermost one with the right text
+    order_summary_tds.sort(key=lambda node: len(node.text))
+    order_summary_td = order_summary_tds[0]
 
     for item_row in item_rows:
         tds = item_row('td')
         if len(tds) != 2:
-            other_fields_td = tds[0]
             continue
         description_node = tds[0]
         price_node = tds[1]
@@ -611,13 +620,14 @@ def parse_digital_order_invoice(path: str) -> Optional[Order]:
                 price=parse_amount(price),
             ))
 
-    other_fields_text_lines = get_text_lines(other_fields_td)
+    other_fields_text_lines = get_text_lines(order_summary_td)
 
-    def get_other_field(pattern, allow_multiple=False, return_label=False):
+    def get_other_field(pattern, allow_multiple=False, return_label=False,
+                        source_text=other_fields_text_lines):
         results = []
-        for line in other_fields_text_lines:
-            r = r'^\s*(' + pattern + r')\s+(.*[^\s])\s*$'
-            m = re.match(r, line, re.UNICODE)
+        for line in source_text:
+            r = r'^\s*(' + pattern + r')[\n\s]+(.*[^\s])\s*$'
+            m = re.search(r, line, re.MULTILINE)
             if m is not None:
                 results.append((m.group(1).strip(':'), m.group(2)))
         if not return_label:
@@ -628,10 +638,11 @@ def parse_digital_order_invoice(path: str) -> Optional[Order]:
             return results[0]
         return results
 
-    def get_adjustments(pattern):
+    def get_adjustments(pattern, source_text=other_fields_text_lines):
         adjustments = []
         for label, amount_str in get_other_field(
-                pattern, allow_multiple=True, return_label=True):
+                pattern, allow_multiple=True, return_label=True,
+                source_text=source_text):
             adjustments.append(
                 Adjustment(amount=parse_amount(amount_str), description=label))
         return adjustments
@@ -678,16 +689,24 @@ def parse_digital_order_invoice(path: str) -> Optional[Order]:
 
     order_id_pattern = '^Amazon.com\\s+order number:\\s+(D[0-9-]+)$'
 
-    order_id_td = soup.find(lambda node: node.name == 'td' and re.match(order_id_pattern, node.text.strip()))
+    order_id_td = soup.find(lambda node: re.match(order_id_pattern, node.text.strip()))
+    assert order_id_td is not None
     m = re.match(order_id_pattern, order_id_td.text.strip())
     assert m is not None
     order_id = m.group(1)
 
     payment_table = soup.find(
-        lambda node: node.name == 'table' and node.text.strip().startswith('Payment Information')
+        lambda node: node.name == 'table' and 'Grand Total:' in
+                                              "\n".join(node.strings)
     )
     credit_card_transactions = parse_credit_card_transactions_from_payments_table(
         payment_table, order_date)
+
+    posttax_adjustments = get_adjustments(
+        posttax_adjustment_fields_pattern, ["\n".join(payment_table.strings)]
+    )
+    if output_fields['posttax_adjustments']:
+        posttax_adjustments.extend(output_fields['posttax_adjustments'])
 
     return Order(
         order_date=order_date,
@@ -695,7 +714,7 @@ def parse_digital_order_invoice(path: str) -> Optional[Order]:
         shipments=[shipment],
         credit_card_transactions=credit_card_transactions,
         pretax_adjustments=[],
-        posttax_adjustments=output_fields['posttax_adjustments'],
+        posttax_adjustments=posttax_adjustments,
         tax=[],
         errors=[])
 

@@ -413,8 +413,13 @@ class JournalEditor(object):
 
         writer = _AtomicWriter(
             filename, mode='w+', encoding='utf-8', newline='\n', overwrite=True)
-        with writer.open() as f:
-            f.write(new_data)
+        try:
+            with writer.open() as f:
+                f.write(new_data)
+        except PermissionError as permError:
+            # this fails frequenty on windows so catch and log instead.
+            print("Failure to write", permError)
+
         # On MS Windows, closing a file that has just been written causes the
         # modification time to change.  Therefore, we must close the file before
         # checking the modification time in order to get a modification time

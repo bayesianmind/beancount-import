@@ -317,8 +317,8 @@ def make_amazon_transaction(
     )
     for i, error in enumerate(invoice.errors):
         txn.meta['amazon_invoice_error%d' % i] = error
-    for i, shipment in enumerate(invoice.shipments):
-        unknown_account_name = FIXME_ACCOUNT + ':' + chr(ord('A') + i)
+    for shipment in invoice.shipments:
+        unknown_account_name = FIXME_ACCOUNT
         for item in shipment.items:
             meta = collections.OrderedDict([
                 (ITEM_DESCRIPTION_KEY, item.description),

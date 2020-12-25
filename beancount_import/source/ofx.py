@@ -1020,6 +1020,9 @@ class ParsedOfxStatement(object):
                 # Incoming transfers will always have to be manually fixed to include correct lots
                 # Try to predict account
                 external_account_name = FIXME_ACCOUNT
+                if "Investment Expense" in raw.memo:
+                   external_account_name = get_account_by_key(
+                                account, 'fees_account')
             elif raw.trantype == 'INVBANKTRAN' or raw.trantype == 'STMTTRN':
                 external_account_name = FIXME_ACCOUNT
             elif (raw.trantype == 'BUYMF' or raw.trantype == 'BUYSTOCK') and raw.inv401ksource is not None:

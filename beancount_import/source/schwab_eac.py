@@ -356,14 +356,15 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
         description_based_source.get_pending_and_invalid_entries(
             raw_entries=self.entries,
             journal_entries=journal.all_entries,
-            # Only the subset of accounts needed for the dedupe logic.
-            account_set={self.cash_account, self.eac_account},
+            # Only the subset of accounts where this source is authoritative.
+            account_set={self.eac_account},
             get_key_from_posting=_get_key_from_posting,
             get_key_from_raw_entry=_get_key_from_entry,
             make_import_result=self._make_import_result,
             results=results)
 
     def is_posting_cleared(self, posting: Posting):
+        return True
         if posting.meta is None:
             return False
         return "source_desc" in posting.meta or "basis" in posting.meta

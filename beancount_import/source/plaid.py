@@ -113,15 +113,16 @@ from ..journal_editor import JournalEditor
 METADATA_ACCT_ID = "plaid_account_id"
 METADATA_TRAN_ID = "plaid_transaction_id"
 
+
 def load_transactions(filename: str) -> List[Dict]:
     try:
-        match = re.search(r"(\d\d\d\d-\d\d-\d\d).bal", filename)
+        bal_file_pattern = re.search(r"(\d\d\d\d-\d\d-\d\d).bal", filename)
         with open(filename, 'r', encoding='utf-8', newline='') as jsonfile:
             entries = json.load(jsonfile)
-            for entry in entries:
-                entry['file'] = filename
-                if match:
-                    entry['date'] = entry.setdefault('date', match.group(1))
+            for idx, entry in enumerate(entries):
+                entries[idx]['file'] = filename
+                if bal_file_pattern:
+                    entries[idx]['date'] = bal_file_pattern.group(1)
         return entries
 
     except Exception as e:
@@ -143,7 +144,7 @@ def _get_entry_transaction_id(entry: Directive):
 def get_transaction_ids_seen(journal: JournalEditor) -> Set[str]:
     transaction_ids = set()
     for entry in journal.all_entries:
-        for transaction_id in  _get_entry_transaction_id(entry):
+        for transaction_id in _get_entry_transaction_id(entry):
             transaction_ids.add(transaction_id)
     return transaction_ids
 
@@ -162,7 +163,8 @@ def _make_import_result(entry) -> ImportResult:
             meta["category"] = ", ".join(entry['category'])
         meta["source_desc"] = entry['name']
         sign = -1
-        amount = Amount(number=sign * round(D(entry['amount']), 2),
+        # json parsed the number as a float, need to make it fixed point.
+        amount = Amount(number=sign * D(str(entry['amount'])),
                         currency=entry['iso_currency_code']
                         )
         journal_entry = Transaction(
@@ -193,12 +195,16 @@ def _make_import_result(entry) -> ImportResult:
             ])
     else:
         balance = entry['balances']
+        sign = 1
+        if entry['account'].startswith('Liabilities'):
+            sign = -1
         journal_entry = Balance(
             date=date,
             meta=None,
             account=entry['account'],
             amount=Amount(
-                number=D(balance['current']),
+                # json parsed the number as a float, need to make it fixed point.
+                number=sign * D(str(balance['current'])),
                 currency=balance['iso_currency_code'],
             ),
             tolerance=None,
@@ -217,11 +223,13 @@ def _make_import_result(entry) -> ImportResult:
 class PlaidSource(Source):
     def __init__(self,
                  directory: str,
+                 fixed_classifier=None,
                  **kwargs) -> None:
         super().__init__(**kwargs)
         self.filenames = directory
 
         self.plaid_entries = []
+        self.fixed_classifier = fixed_classifier
         self.name_suffix = os.path.basename(directory)
         for file in os.listdir(directory):
             if not file.endswith(".txt"):
@@ -233,33 +241,42 @@ class PlaidSource(Source):
     def prepare(self, journal: JournalEditor, results: SourceResults) -> None:
         account_to_plaid_id, plaid_id_to_account = \
             description_based_source.get_account_mapping(
-            journal.accounts, METADATA_ACCT_ID)
+                journal.accounts, METADATA_ACCT_ID)
+        results.add_accounts(account_to_plaid_id.keys())
         missing_accounts = set()  # type: Set[str]
-        seen_trans_ids = get_transaction_ids_seen(journal)
+        journaled_tran_ids = get_transaction_ids_seen(journal)
         # dedupes pending transactions from multiple files
-        used_trans_ids = {}
+        pending_trans_ids = {}
 
         for entry in self.plaid_entries:
+            account = plaid_id_to_account.get(entry['account_id'])
+            if not account:
+                missing_accounts.add(entry['account_id'])
+                continue
+            entry["account"] = account
+            pending_entry = _make_import_result(entry)
+            transaction_id = entry.get('transaction_id')
+            if entry.get("balances"):
+                # for bal entries, use the entry itself as a key
+                transaction_id = pending_entry.entries[0]
+            if not transaction_id:
+                continue
             if entry.get('pending') and bool(entry.get('pending')):
                 # skip pending transactions until they clear
                 continue
-            if entry.get('transaction_id') in seen_trans_ids:
+            if transaction_id in journaled_tran_ids:
                 continue
-            if entry.get('transaction_id') in used_trans_ids:
+            if transaction_id in pending_trans_ids:
                 continue
-            account_id = plaid_id_to_account.get(entry['account_id'])
-            if not account_id:
-                missing_accounts.add(entry['account_id'])
-                continue
-            entry["account"] = account_id
-            used_trans_ids[entry.get('transaction_id')] = None
-            results.add_accounts(account_to_plaid_id.keys())
-            results.add_pending_entry(_make_import_result(entry))
+            pending_trans_ids[transaction_id] = None
+            if self.fixed_classifier:
+                self.fixed_classifier(pending_entry)
+            results.add_pending_entry(pending_entry)
 
         for plaid_account in missing_accounts:
             results.add_warning(
                 'No Beancount account with plaid_account_id: %r.' %
-                (plaid_account, ))
+                (plaid_account,))
 
     def is_posting_cleared(self, posting: Posting):
         if posting.meta is None:

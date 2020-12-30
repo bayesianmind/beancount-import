@@ -126,7 +126,7 @@ def parse(filepath: str):
                     vest_date=date(award["Vest Date"]),
                     vest_fmv=dollars(award["Vest FMV"]),
                 ))
-            elif action == "Journal":
+            elif action in ("Journal", "Wire Transfer", "Service Fee"):
                 entries.append(JournalTransfer(
                     action=action,
                     source_desc=source_desc,
@@ -256,6 +256,10 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
                 ])
         elif x._fields == JournalTransfer._fields:
                 tran = JournalTransfer(*x)
+                dest_account = FIXME_ACCOUNT
+                if tran.action == "Journal":
+                    # TODO: infer correct account from description
+                    dest_account =  self.cash_account
                 transaction = Transaction(
                     meta=None,
                     date=tran.date,
@@ -276,7 +280,7 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
                                 date=tran.date,
                             )),
                         Posting(
-                            account=self.cash_account,
+                            account=dest_account,
                             units=-tran.cash,
                             cost=None,
                             price=None,

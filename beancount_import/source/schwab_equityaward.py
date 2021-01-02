@@ -17,6 +17,9 @@ from beancount_import.journal_editor import JournalEditor
 from beancount_import.matching import FIXME_ACCOUNT
 from beancount_import.source import SourceResults, description_based_source, \
     ImportResult
+from beancount_import.source.description_based_source import \
+    get_posting_source_descs
+from beancount_import.unbook import group_postings_by_meta, unbook_postings
 
 Basis = NamedTuple('Basis', [
     ('type', str),
@@ -74,7 +77,7 @@ JournalTransfer = NamedTuple('JournalTransfer', [
 
 
 def dollars(s: str):
-    if not s: return None
+    if not s: s = "0"
     # I personally have only seen USD in these files, let me know if that's
     # an invalid assumption for Schwab EAC files.
     s = s.replace("$", "")
@@ -127,7 +130,7 @@ def parse(filepath: str):
                     vest_fmv=dollars(award["Vest FMV"]),
                 ))
             elif action in ("Journal", "Wire Transfer", "Service Fee"):
-                entries.append(JournalTransfer(
+                journal_entry = JournalTransfer(
                     action=action,
                     source_desc=source_desc,
                     file=filepath,
@@ -136,14 +139,20 @@ def parse(filepath: str):
                     description=entry["Description"],
                     shares=D(entry["Quantity"]),
                     cash=dollars(entry["Amount"]),
-                ))
+                )
+                if journal_entry.shares == D("0") and \
+                    journal_entry.cash.number == 0:
+                    continue
+                entries.append(journal_entry)
             elif action == "Sale":
                 # this entry has variable basis, so read until non-basis line
                 # and then skip the normal next line reading
                 basislines = []
-                for line in file:
+                line = next(file, None)
+                while line is not None:
                     if not line.startswith(r'"",'): break
                     basislines.append(line)
+                    line = next(file, None)
                 basisentries = []
                 for basis in csv.DictReader(basislines):
                     if D(basis["Shares"]) == 0: continue
@@ -206,6 +215,7 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
         self.fees_account = fees_account
         self.pnl_account = pnl_account
         self.entries = []
+        self.example_posting_key_extractors["source_desc"] = None
 
         for filename in os.listdir(directory):
             m = re.match(r'^EquityAwards.*.csv$', filename)
@@ -255,39 +265,39 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
                     ),
                 ])
         elif x._fields == JournalTransfer._fields:
-                tran = JournalTransfer(*x)
-                dest_account = FIXME_ACCOUNT
-                if tran.action == "Journal":
-                    # TODO: infer correct account from description
-                    dest_account =  self.cash_account
-                transaction = Transaction(
-                    meta=None,
-                    date=tran.date,
-                    flag=FLAG_OKAY,
-                    payee=None,
-                    narration=tran.description,
-                    tags=EMPTY_SET,
-                    links=EMPTY_SET,
-                    postings=[
-                        Posting(
-                            account=self.eac_account,
-                            units=tran.cash,
-                            cost=None,
-                            price=None,
-                            flag=None,
-                            meta=collections.OrderedDict(
-                                source_desc=tran.source_desc,
-                                date=tran.date,
-                            )),
-                        Posting(
-                            account=dest_account,
-                            units=-tran.cash,
-                            cost=None,
-                            price=None,
-                            flag=None,
-                            meta=None,
-                        ),
-                    ])
+            tran = JournalTransfer(*x)
+            dest_account = FIXME_ACCOUNT
+            if tran.action == "Journal":
+                # TODO: infer correct account from description
+                dest_account = self.cash_account
+            transaction = Transaction(
+                meta=None,
+                date=tran.date,
+                flag=FLAG_OKAY,
+                payee=None,
+                narration=tran.description,
+                tags=EMPTY_SET,
+                links=EMPTY_SET,
+                postings=[
+                    Posting(
+                        account=self.eac_account,
+                        units=tran.cash,
+                        cost=None,
+                        price=None,
+                        flag=None,
+                        meta=collections.OrderedDict(
+                            source_desc=tran.source_desc,
+                            date=tran.date,
+                        )),
+                    Posting(
+                        account=dest_account,
+                        units=-tran.cash,
+                        cost=None,
+                        price=None,
+                        flag=None,
+                        meta=None,
+                    ),
+                ])
 
         elif x._fields == Sale._fields:
             sale = Sale(*x)
@@ -357,6 +367,10 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
             entries=[transaction])
 
     def prepare(self, journal: JournalEditor, results: SourceResults) -> None:
+        deduped_results = {}
+        for entry in self.entries:
+            deduped_results[_get_key_from_entry(entry)] = entry
+        self.entries = deduped_results.values()
         description_based_source.get_pending_and_invalid_entries(
             raw_entries=self.entries,
             journal_entries=journal.all_entries,
@@ -365,7 +379,35 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
             get_key_from_posting=_get_key_from_posting,
             get_key_from_raw_entry=_get_key_from_entry,
             make_import_result=self._make_import_result,
-            results=results)
+            results=results,
+        )
+
+    def check_journal_for_duplicate_imports(self, journal: JournalEditor,
+                                            results: SourceResults):
+        seen_keys = {}
+        for entry in journal.all_entries:
+            if not isinstance(entry, Transaction):
+                continue
+            for postings in group_postings_by_meta(entry.postings):
+                posting = unbook_postings(postings)
+                if posting.meta is None:
+                    continue
+                if posting.account is not self.eac_account:
+                    continue
+                for source_desc, posting_date in get_posting_source_descs(
+                    posting):
+                    key = _get_key_from_posting(entry, posting, postings,
+                                                source_desc, posting_date)
+                    if key is None:
+                        continue
+                    meta = entry.meta
+                    prev_location = seen_keys.get(key, None)
+                    if prev_location is not None:
+                        results.add_error(
+                            f"Duplicate posting key at {meta.file}:{meta.line}"
+                            "and at {meta.file}:{meta.line}"
+                        )
+                    seen_keys[key] = meta
 
     def is_posting_cleared(self, posting: Posting):
         return True

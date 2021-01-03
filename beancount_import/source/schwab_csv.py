@@ -206,6 +206,7 @@ class RawBrokerageEntry:
     ) -> Optional[BrokerageTransaction]:
         capital_gains_account = self.get_meta_account(account_meta, CAPITAL_GAINS_ACCOUNT_KEY)
         fees_account = self.get_meta_account(account_meta, FEES_ACCOUNT_KEY)
+        interest_account = self.get_meta_account(account_meta, INTEREST_INCOME_ACCOUNT_KEY)
         dividend_account = self.get_meta_account(account_meta, DIV_INCOME_ACCOUNT_KEY)
         taxes_account = self.get_meta_account(account_meta, TAXES_ACCOUNT_KEY)
         amount = self.amount
@@ -243,8 +244,8 @@ class RawBrokerageEntry:
                 **shared_attrs,
             )
         if self.action == BrokerageAction.BANK_INTEREST:
-            return BankInterest(
-                dividend_account=dividend_account,
+            return BrokerageBankInterest(
+                interest_account=interest_account,
                 **shared_attrs,
             )
         if self.action in (BrokerageAction.MONEYLINK_TRANSFER,
@@ -416,10 +417,10 @@ class BankTransaction(DirectiveEntry):
 
 @dataclass(frozen=True)
 class BankInterest(BankTransaction):
-    interest_income_account: str
+    interest_account: str
 
     def get_other_account(self) -> str:
-        return self.interest_income_account
+        return self.interest_account
 
 @dataclass(frozen=True)
 class BrokerageTransaction(DirectiveEntry):
@@ -574,14 +575,14 @@ class CashDividend(BrokerageTransaction):
 
 
 @dataclass(frozen=True)
-class BankInterest(BrokerageTransaction):
-    dividend_account: str
+class BrokerageBankInterest(BrokerageTransaction):
+    interest_account: str
 
     def get_sub_account(self) -> Optional[str]:
         return "Cash"
 
     def get_other_account(self) -> str:
-        return self.dividend_account
+        return self.interest_account
 
     def get_narration_prefix(self) -> str:
         return "INTEREST"
@@ -641,7 +642,7 @@ class Sell(BrokerageTransaction):
                 meta=self.get_meta(),
             ),
         ]
-        if self.action != SchwabAction.SELL_TO_OPEN:
+        if self.action != BrokerageAction.SELL_TO_OPEN:
             # too early to realize gains/losses when opening a short position
             postings.append(
                 Posting(
@@ -720,7 +721,7 @@ class Buy(BrokerageTransaction):
                 meta=self.get_meta(),
             ),
         ]
-        if self.action == SchwabAction.BUY_TO_CLOSE:
+        if self.action == BrokerageAction.BUY_TO_CLOSE:
             # need to record gains when closing a short position
             postings.append(
                 Posting(

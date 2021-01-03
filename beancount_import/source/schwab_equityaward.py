@@ -410,7 +410,6 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
                     seen_keys[key] = meta
 
     def is_posting_cleared(self, posting: Posting):
-        return True
         if posting.meta is None:
             return False
         return "source_desc" in posting.meta or "basis" in posting.meta

@@ -31,6 +31,7 @@ setup(
         'beautifulsoup4',
         'tornado',
         'numpy',
+        'plaid-python>=7.2.0',
         'scipy',
         'scikit-learn',
         'nltk',

@@ -1,6 +1,6 @@
 """Schwab.com brokerage transaction source.
 
-Imports transactions from Schwab.com brokerage transaction history CSV files.
+Imports transactions from Schwab.com brokerage/banking history CSV files.
 
 To use, first you have to download Schwab CSV data into a directory on your filesystem. If
 you have a structure like this:
@@ -33,6 +33,7 @@ gains, fees, and taxes:
     2015-11-09 open Assets:Investments:Schwab:Brokerage-1234
          schwab_account: "Brokerage XXXX-1234"
          div_income_account: "Income:Dividend:Schwab"
+         interest_income_account: "Income:Interest:Schwab"
          capital_gains_account: "Income:Capital-Gains:Schwab"
          fees_account: "Expenses:Brokerage-Fees:Schwab"
          taxes_account: "Expenses:Taxes"
@@ -158,7 +159,7 @@ class BankingEntryType(enum.Enum):
 class RawBankEntry:
     account: str
     date: datetime.date
-    type: BankingEntryType
+    entry_type: BankingEntryType
     check_no: Optional[int]
     description: str
     amount: Optional[Amount]
@@ -171,13 +172,27 @@ class RawBankEntry:
 
     def get_processed_entry(
         self, account: str, account_meta: Meta
-    ) -> Optional[BrokerageTransaction]:
+    ) -> Optional[BankTransaction]:
         interest_account = self.get_meta_account(account_meta,
                                             INTEREST_INCOME_ACCOUNT_KEY)
+        shared_attrs: SharedAttrsDict = dict(
+            account=account,
+            date=self.date,
+            entry_type=self.entry_type,
+            description=self.description,
+            amount=self.amount,
+            filename=self.filename,
+            line=self.line,
+        )
+        if self.entry_type == BankingEntryType.INTADJUST:
+            return NonBrokerageBankInterest(
+               interest_account=interest_account,
+               **shared_attrs,
+            )
         return BankTransaction(
             account=account,
             date=self.date,
-            type=self.type,
+            entry_type=self.entry_type,
             description=self.description,
             amount=self.amount,
             filename=self.filename,
@@ -347,14 +362,14 @@ class DirectiveEntry:
 class BankTransaction(DirectiveEntry):
     account: str
     date: datetime.date
-    type: BankingEntryType
+    entry_type: BankingEntryType
     description: str
     amount: Amount
     filename: str
     line: int
 
     def get_action(self) -> str:
-        return self.type.value
+        return self.entry_type.value
 
     def get_directive(self) -> Transaction:
         return Transaction(
@@ -412,11 +427,11 @@ class BankTransaction(DirectiveEntry):
         )
 
     def get_narration_prefix(self) -> str:
-        return self.type.value
+        return self.entry_type.value
 
 
 @dataclass(frozen=True)
-class BankInterest(BankTransaction):
+class NonBrokerageBankInterest(BankTransaction):
     interest_account: str
 
     def get_other_account(self) -> str:
@@ -834,7 +849,8 @@ class EntryProcessor:
         self.missing_accounts: Set[str] = set()
         self.found_accounts: Set[str] = set()
 
-    def process_entry(self, raw_entry: Union[RawBrokerageEntry, RawBankEntry]) -> Optional[BrokerageTransaction]:
+    def process_entry(self, raw_entry: Union[RawBrokerageEntry, RawBankEntry]) -> \
+            Optional[Union[RawBrokerageEntry, RawBankEntry]]:
         account = self.schwab_to_account.get(raw_entry.account)
         if account is None:
             self.missing_accounts.add(raw_entry.account)
@@ -844,7 +860,7 @@ class EntryProcessor:
 
     def process_entries(
         self, raw_entries: Iterable[Union[RawBrokerageEntry, RawBankEntry]]
-    ) -> Iterator[BrokerageTransaction]:
+    ) -> Iterator[Union[RawBrokerageEntry, RawBankEntry]]:
         for raw_entry in raw_entries:
             processed = self.process_entry(raw_entry)
             if processed is not None:
@@ -1099,18 +1115,21 @@ def _load_transactions(filename: str) -> List[Union[RawBrokerageEntry, RawBankEn
 def _load_banking_transactions(reader: csv.DictReader, account: str, filename):
     entries = []
     transaction_start_line = 2
-    POSSIBLE_DATE=re.compile(r"\d/+")
+    POSSIBLE_DATE=re.compile(r"[\d/\\]+")
     for lno, row in enumerate(reader):
         # First two rows are info messages.
         if not POSSIBLE_DATE.match(row["Date"]):
             transaction_start_line += 1
             continue
         date = _convert_date(row["Date"])
-        type = BankingEntryType(row["Type"])
-        check_no = int(row["Check #"])
+        entry_type = BankingEntryType(row["Type"])
+        check_no = None
+        if row["Check #"] not in (None, ""):
+            check_no = int(row["Check #"])
         description = row["Description"]
         withdrawal_amount = _convert_decimal(row["Withdrawal (-)"])
         deposit_amount = _convert_decimal(row["Deposit (+)"])
+        running_balance = _convert_decimal(row["RunningBalance"])
         amount_present = withdrawal_amount or deposit_amount
         amount = D(0)
         if withdrawal_amount:
@@ -1121,10 +1140,11 @@ def _load_banking_transactions(reader: csv.DictReader, account: str, filename):
             RawBankEntry(
                 account=account,
                 date=date,
-                type=type,
+                entry_type=entry_type,
                 check_no=check_no,
                 description=description,
                 amount=Amount(amount, currency=CASH_CURRENCY) if amount_present else None,
+                running_balance=running_balance,
                 filename=filename,
                 line=lno + transaction_start_line,
             )
@@ -1140,6 +1160,8 @@ def _load_brokerage_transactions(reader: csv.DictReader, account: str,
         # Final row in CSV is not a real transaction
         if row["Date"] == "Transactions Total":
             found_total_line = True
+            continue
+        if row["Date"] == "":
             continue
         assert not found_total_line
         date = _convert_date(row["Date"])
@@ -1173,7 +1195,7 @@ def _load_brokerage_transactions(reader: csv.DictReader, account: str,
 
 POSITIONS_TITLE_RE = re.compile(
     r'"?Positions for (account )?(?P<account>.+) as of (?P<time>.+), '
-    r'(?P<date>.+)"?'
+    r'(?P<date>[\d\/]+)"?'
 )
 POSITIONS_ACCT_RE = re.compile(r'"(?P<account>.+)"')
 

@@ -145,6 +145,8 @@ class BrokerageAction(enum.Enum):
     WIRE_FUNDS = "Wire Funds"
     WIRE_FUNDS_RECEIVED = "Wire Funds Received"
     MISC_CASH_ENTRY = "Misc Cash Entry"
+    JOURNALED_SHARES = "Journaled Shares"
+    EXERCISE = "Exchange or Exercise"
 
 
 class BankingEntryType(enum.Enum):
@@ -269,17 +271,18 @@ class RawBrokerageEntry(RawEntry):
             )
         if self.action in (BrokerageAction.MONEYLINK_TRANSFER,
                            BrokerageAction.JOURNAL,
+                           BrokerageAction.JOURNALED_SHARES,
                            BrokerageAction.WIRE_FUNDS,
                            BrokerageAction.WIRE_FUNDS_RECEIVED):
             return Transfer(**shared_attrs)
         if self.action in (BrokerageAction.SELL,
                             BrokerageAction.SELL_TO_OPEN,
-                            BrokerageAction.SELL_TO_CLOSE
+                            BrokerageAction.SELL_TO_CLOSE,
+                            BrokerageAction.EXERCISE
                            ):
             quantity = self.quantity
             assert quantity is not None
             price = self.price
-            assert price is not None
             return Sell(
                 capital_gains_account=capital_gains_account,
                 fees_account=fees_account,

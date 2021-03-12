@@ -110,7 +110,8 @@ def parse(filepath: str):
             if not normal_entry_re.match(line):
                 logging.fatal("invalid line:" + line)
             entry = next(csv.DictReader([header, line]))
-            source_desc = ', '.join(entry.values()).strip(", ")
+            values = [v for v in entry.values() if v is not None]
+            source_desc = ', '.join(values).strip(", ")
             line = None
             action = entry["Action"]
             if action == "Deposit":

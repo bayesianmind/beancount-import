@@ -1016,12 +1016,18 @@ class ParsedOfxStatement(object):
                 external_account_name = get_account_by_key(
                     account, '%s_income_account' %
                     raw.incometype.lower()) + ':' + security
+            elif raw.trntype == "INT":
+                external_account_name = get_account_by_key(
+                    account, 'interest_income_account')
+            elif raw.trntype == "DIV":
+                external_account_name = get_account_by_key(
+                    account, 'div_income_account')
             elif raw.trantype == 'TRANSFER':
                 # Incoming transfers will always have to be manually fixed to include correct lots
                 # Try to predict account
                 external_account_name = FIXME_ACCOUNT
                 if "Investment Expense" in raw.memo:
-                   external_account_name = get_account_by_key(
+                    external_account_name = get_account_by_key(
                                 account, 'fees_account')
             elif raw.trantype == 'INVBANKTRAN' or raw.trantype == 'STMTTRN':
                 external_account_name = FIXME_ACCOUNT

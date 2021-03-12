@@ -93,7 +93,7 @@ unknown account.  However, this data source does not rely on those fields, as
 they are not stable (meaning they may change on a subsequent download).
 """
 
-from typing import List, Union, Optional, Set, Dict
+from typing import List, Set, Dict, Tuple
 import json
 import datetime
 import collections
@@ -104,7 +104,7 @@ from beancount.core.data import Transaction, Posting, Balance, EMPTY_SET, \
     Directive, Meta
 from beancount.core.amount import Amount
 from beancount.core.flags import FLAG_OKAY
-from beancount.core.number import MISSING, D, ZERO
+from beancount.core.number import D
 
 from . import ImportResult, Source, SourceResults, description_based_source
 from ..matching import FIXME_ACCOUNT
@@ -141,12 +141,17 @@ def _get_entry_transaction_id(entry: Directive):
     return transaction_ids
 
 
-def get_transaction_ids_seen(journal: JournalEditor) -> Set[str]:
+def get_transaction_ids_seen(journal: JournalEditor) -> \
+        Tuple[Set[str], Dict[str, datetime.date]]:
     transaction_ids = set()
+    latest_bal_by_acct = {}
     for entry in journal.all_entries:
         for transaction_id in _get_entry_transaction_id(entry):
             transaction_ids.add(transaction_id)
-    return transaction_ids
+        if isinstance(entry, Balance):
+            latest_bal_by_acct[entry.account] = max(
+                latest_bal_by_acct.get(entry.account, entry.date), entry.date)
+    return transaction_ids, latest_bal_by_acct
 
 
 def _make_import_result(entry) -> ImportResult:
@@ -244,9 +249,9 @@ class PlaidSource(Source):
                 journal.accounts, METADATA_ACCT_ID)
         results.add_accounts(account_to_plaid_id.keys())
         missing_accounts = set()  # type: Set[str]
-        journaled_tran_ids = get_transaction_ids_seen(journal)
+        journaled_tran_ids, latest_bal_by_acct = get_transaction_ids_seen(journal)
         # dedupes pending transactions from multiple files
-        pending_trans_ids = {}
+        pending_trans_ids: Dict[str, bool] = {}
 
         for entry in self.plaid_entries:
             account = plaid_id_to_account.get(entry['account_id'])
@@ -259,6 +264,9 @@ class PlaidSource(Source):
             if entry.get("balances"):
                 # for bal entries, use the entry itself as a key
                 transaction_id = pending_entry.entries[0]
+                account = entry.get("account")
+                if account in latest_bal_by_acct and latest_bal_by_acct[account] >= datetime.date.fromisoformat(entry["date"]):
+                    continue
             if not transaction_id:
                 continue
             if entry.get('pending') and bool(entry.get('pending')):

@@ -1026,7 +1026,7 @@ class ParsedOfxStatement(object):
                 # Incoming transfers will always have to be manually fixed to include correct lots
                 # Try to predict account
                 external_account_name = FIXME_ACCOUNT
-                if "Investment Expense" in raw.memo:
+                if raw.memo and "Investment Expense" in raw.memo:
                     external_account_name = get_account_by_key(
                                 account, 'fees_account')
             elif raw.trantype == 'INVBANKTRAN' or raw.trantype == 'STMTTRN':
@@ -1282,16 +1282,17 @@ class PrepareState(object):
                     last_lineno = new_lineno
                     fitid = meta.get(OFX_FITID_KEY, None)
                     if fitid is None: continue
-                    m = re.fullmatch(account_leaf_regexp, posting.account)
-                    if m is not None:
-                        lookup_account = m.group(1)
-                    else:
-                        lookup_account = posting.account
+
+                    # Resolve ofx_id up the account tree
+                    lookup_account = posting.account
                     ofx_id = account_to_ofx_id.get(lookup_account)
-                    if ofx_id is None and lookup_account is not posting.account:
-                        ofx_id = account_to_ofx_id.get(posting.account)
+                    while ofx_id is None and ":" in lookup_account:
+                        m = lookup_account.split(":")
+                        lookup_account = ":".join(m[:-1])
+                        ofx_id = account_to_ofx_id.get(lookup_account)
                     if ofx_id is None:
                         continue
+
                     results.add_account(posting.account)
                     date = get_posting_date(entry, posting)
                     fitid_transfer = None  # type: Optional[str]

@@ -483,6 +483,7 @@ RawCashBalanceEntry = NamedTuple('RawCashBalanceEntry', [
 RawTransactionEntry = NamedTuple('RawTransactionEntry', [
     ('filename', str),
     ('date', datetime.date),
+    ('settledate', Optional[datetime.date]),
     ('fitid', str),
     ('trantype', str),
     ('total', Decimal),
@@ -596,6 +597,7 @@ RELATED_ACCOUNT_KEYS = ['aftertax_account', 'pretax_account', 'match_account']
 # Tolerance allowed in transaction balancing.  In units of base currency used, e.g. USD.
 TOLERANCE = 0.05
 
+
 class ParsedOfxStatement(object):
     def __init__(self, seen_fitids, filename, securities_map, org, stmtrs):
         filename = os.path.abspath(filename)
@@ -629,6 +631,8 @@ class ParsedOfxStatement(object):
                 date = parse_ofx_time(
                     find_child(tran, 'dttrade') or
                     find_child(tran, 'dtposted')).date()
+                dtsettle = find_child(tran, 'dtsettle')
+                settledate = parse_ofx_time(dtsettle).date() if dtsettle else None
                 # We include the date along with the FITID because some financial institutions fail
                 # to produce truly unique FITID values.  For example, National Financial Services
                 # (Fidelity) sometimes produces duplicates when the amount is the same.
@@ -652,6 +656,7 @@ class ParsedOfxStatement(object):
                     trantype=trantype,
                     fitid=fitid,
                     date=date,
+                    settledate=settledate,
                     total=total,
                     incometype=find_child(tran, 'incometype'),
                     inv401ksource=find_child(tran, 'inv401ksource'),
@@ -680,7 +685,6 @@ class ParsedOfxStatement(object):
             raw_cash_balance_entries.append(
                 RawCashBalanceEntry(
                     date=date, number=bal_amount, filename=filename))
-
 
         for invposlist in stmtrs.find_all('invposlist'):
             for invpos in invposlist.find_all('invpos'):
@@ -744,7 +748,7 @@ class ParsedOfxStatement(object):
             if ticker is None:
                 results.add_error(
                     'Missing ticker for security %r.  You must specify it manually using a commodity directive with a cusip metadata field.'
-                    % (unique_id, ))
+                    % (unique_id,))
                 return None
             if not is_valid_commodity_name(ticker):
                 results.add_error(
@@ -769,6 +773,28 @@ class ParsedOfxStatement(object):
 
         def get_subaccount_cash(inv401ksource: Optional[str] = None) -> str:
             return get_subaccount(inv401ksource, 'Cash' if has_securities else None)
+
+        # Vanguard generates transfers for in-plan roth conversion that have no
+        # effect on our ledger (aftertax -> aftertax). Detect and ignore them.
+        seen_transfers = dict()
+        for raw in self.raw_transactions:
+            if raw.trantype != "TRANSFER":
+                continue
+            units = raw.units
+            key = (raw.date, units, raw.uniqueid, raw.inv401ksource)
+            count = seen_transfers.get(key, 0)
+            count += 1
+            seen_transfers[key] = count
+
+        # Cancel matching postings
+        net_transfers = {}
+        for (key, count) in seen_transfers.items():
+            oppkey = (key[0], -key[1], key[2], key[3])
+            match_count = min(count, seen_transfers.get(oppkey, 0))
+            if match_count == 0:
+                continue
+            net_transfers[key] = match_count
+            net_transfers[oppkey] = match_count
 
         for raw in self.raw_transactions:
             match_key = (ofx_id, raw.date, raw.fitid)
@@ -866,10 +892,11 @@ class ParsedOfxStatement(object):
                     # These are sometimes produced by Fidelity.
                     continue
 
-                cur_amount = Amount(number=round(total, 2), currency=self.currency)
+                cur_amount = Amount(number=round(total, 2),
+                                    currency=self.currency)
 
                 if not has_cash_account:
-                    #if raw.trantype != 'INCOME':
+                    # if raw.trantype != 'INCOME':
                     raise ValueError('Cash transaction not expected')
                     # entry.postings.append(
                     #     Posting(
@@ -922,6 +949,9 @@ class ParsedOfxStatement(object):
                 cost_spec = None
                 price = None
                 is_sale = False
+                # Vanguard rebalancing 401k settle on the same day
+                is_rebalancing = raw.settledate == raw.date and raw.trantype \
+                                 == "TRANSFER"
                 if raw.trantype in SELL_TYPES or (raw.trantype == 'TRANSFER' and
                                                   units < ZERO):
                     is_sale = True
@@ -937,14 +967,24 @@ class ParsedOfxStatement(object):
                     price = Amount(number=unitprice, currency=self.currency)
                 elif raw.trantype == 'TRANSFER' and units > ZERO:
                     # Transfer in.
+                    if is_rebalancing:
+                        price = Amount(number=unitprice, currency=self.currency)
+                        cost_spec = CostSpec(
+                            number_per=MISSING,
+                            number_total=None,
+                            currency=MISSING,
+                            date=None,
+                            label=None,
+                            merge=False)
                     # OFX does not specify the lot information, so it will have to be manually fixed.
-                    cost_spec = CostSpec(
-                        number_per=D('1'),
-                        number_total=None,
-                        currency=self.currency,
-                        date=None,
-                        label='FIXME',
-                        merge=False)
+                    else:
+                        cost_spec = CostSpec(
+                            number_per=D('1'),
+                            number_total=None,
+                            currency=self.currency,
+                            date=None,
+                            label='FIXME',
+                            merge=False)
                 elif raw.trantype == 'TRANSFER' and units == ZERO:
                     # Internal transfer, i.e. from after-tax to roth
                     continue
@@ -962,6 +1002,13 @@ class ParsedOfxStatement(object):
 
                 if raw.tferaction == 'OUT':
                     assert units < ZERO
+
+                # skip offsetting transfers
+                if raw.trantype == 'TRANSFER':
+                    key = (raw.date, units, raw.uniqueid, raw.inv401ksource)
+                    if net_transfers.get(key, 0) >= 1:
+                        net_transfers[key] -= 1
+                        continue
 
                 security_account_name = get_subaccount(raw.inv401ksource,
                                                        security)
@@ -1022,7 +1069,7 @@ class ParsedOfxStatement(object):
             elif raw.trntype == "DIV":
                 external_account_name = get_account_by_key(
                     account, 'div_income_account')
-            elif raw.trantype == 'TRANSFER':
+            elif raw.trantype == 'TRANSFER' and not is_rebalancing:
                 # Incoming transfers will always have to be manually fixed to include correct lots
                 # Try to predict account
                 external_account_name = FIXME_ACCOUNT
@@ -1234,6 +1281,7 @@ def prune_valid_duplicates(matches: List[Tuple[Transaction, Posting]]) -> List[T
 
     return [x for x in matches if should_include(x)]
 
+
 class PrepareState(object):
     def __init__(self, source: 'OfxSource', journal: JournalEditor,
                  results: SourceResults) -> None:
@@ -1416,6 +1464,7 @@ def load(spec, log_status):
 
 if __name__ == '__main__':
     import argparse
+
     ap = argparse.ArgumentParser()
     ap.add_argument('ofx_file')
     args = ap.parse_args()

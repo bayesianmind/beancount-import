@@ -24,7 +24,7 @@ from beancount_import.unbook import group_postings_by_meta, unbook_postings
 Basis = NamedTuple('Basis', [
     ('type', str),
     ('shares', Decimal),
-    ('sale_price', Amount),
+    ('sale_price', Optional[Amount]),
     ('subscription_date', Optional[datetime.date]),
     ('subscription_fmv', Optional[Amount]),
     ('purchase_date', Optional[datetime.date]),
@@ -33,7 +33,7 @@ Basis = NamedTuple('Basis', [
     ('grant_id', str),
     ('vest_date', datetime.date),
     ('vest_fmv', Amount),
-    ('gross_proceeds', Amount),
+    ('gross_proceeds', Optional[Amount]),
 ])
 
 DepositShares = NamedTuple('DepositShares', [
@@ -72,7 +72,8 @@ JournalTransfer = NamedTuple('JournalTransfer', [
     ('symbol', str),
     ('description', str),
     ('shares', float),
-    ('cash', Amount),
+    ('cash', Optional[Amount]),
+    ('basis', List[Basis]),
 ])
 
 
@@ -130,6 +131,42 @@ def parse(filepath: str):
                     vest_date=date(award["Vest Date"]),
                     vest_fmv=dollars(award["Vest FMV"]),
                 ))
+            elif action == "Transfer via Journal":
+                # this entry has variable basis, so read until non-basis line
+                # and then skip the normal next line reading
+                basislines = []
+                line = next(file, None)
+                while line is not None:
+                    if not line.startswith(r'"",'): break
+                    basislines.append(line)
+                    line = next(file, None)
+                basisentries = []
+                for basis in csv.DictReader(basislines):
+                    basisentries.append(Basis(
+                        type=basis["Type"],
+                        shares=D(basis["Shares"]),
+                        grant_id=basis["Grant Id"],
+                        vest_date=date(basis["Vest Date"]),
+                        vest_fmv=dollars(basis["Vest FMV"]),
+                        sale_price=None,
+                        subscription_date=None,
+                        purchase_date=None,
+                        purchase_price=None,
+                        subscription_fmv=None,
+                        purchase_fmv=None,
+                        gross_proceeds=None,
+                    ))
+                entries.append(JournalTransfer(
+                    action=action,
+                    source_desc=source_desc,
+                    file=filepath,
+                    date=date(entry["Date"]),
+                    symbol=entry["Symbol"],
+                    description=entry["Description"],
+                    shares=D(entry["Quantity"]),
+                    cash=None,
+                    basis=basisentries,
+                ))
             elif action in ("Journal", "Wire Transfer", "Service Fee"):
                 journal_entry = JournalTransfer(
                     action=action,
@@ -140,6 +177,7 @@ def parse(filepath: str):
                     description=entry["Description"],
                     shares=D(entry["Quantity"]),
                     cash=dollars(entry["Amount"]),
+                    basis=[],
                 )
                 if journal_entry.shares == D("0") and \
                     journal_entry.cash.number == 0:
@@ -268,18 +306,50 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
         elif x._fields == JournalTransfer._fields:
             tran = JournalTransfer(*x)
             dest_account = FIXME_ACCOUNT
-            if tran.action == "Journal":
-                # TODO: infer correct account from description
-                dest_account = self.cash_account
-            transaction = Transaction(
-                meta=None,
-                date=tran.date,
-                flag=FLAG_OKAY,
-                payee=None,
-                narration=tran.description,
-                tags=EMPTY_SET,
-                links=EMPTY_SET,
-                postings=[
+            narration = tran.description
+            if tran.symbol in self.commodity_dest_acct:
+                dest_account = self.commodity_dest_acct[tran.symbol]
+            if len(tran.basis) > 0:
+                postings = []
+                set_meta = False
+                narration = f"{tran.shares} {tran.symbol} {narration}"
+                for basis in tran.basis:
+                    units = Amount(basis.shares, tran.symbol)
+                    meta = collections.OrderedDict()
+                    if not set_meta:
+                        meta = collections.OrderedDict(
+                            source_desc=tran.source_desc,
+                            date=tran.date,
+                        )
+                        set_meta = True
+                    postings.append(
+                        Posting(
+                            account=self.eac_account,
+                            units=-units,
+                            cost=Cost(basis.vest_fmv.number,
+                                      basis.vest_fmv.currency,
+                                      basis.vest_date,
+                                      None),
+                            price=None,
+                            flag=None,
+                            meta=meta
+                        )
+                    )
+                    postings.append(
+                        Posting(
+                            account=dest_account,
+                            units=units,
+                            cost=Cost(basis.vest_fmv.number,
+                                      basis.vest_fmv.currency,
+                                      basis.vest_date,
+                                      None),
+                            price=None,
+                            flag=None,
+                            meta=None,
+                        )
+                    )
+            else:
+                postings = [
                     Posting(
                         account=self.eac_account,
                         units=tran.cash,
@@ -297,8 +367,20 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
                         price=None,
                         flag=None,
                         meta=None,
-                    ),
-                ])
+                    )
+                ]
+            if tran.action == "Journal":
+                # TODO: infer correct account from description
+                dest_account = self.cash_account
+            transaction = Transaction(
+                meta=None,
+                date=tran.date,
+                flag=FLAG_OKAY,
+                payee=None,
+                narration=narration,
+                tags=EMPTY_SET,
+                links=EMPTY_SET,
+                postings=postings)
 
         elif x._fields == Sale._fields:
             sale = Sale(*x)
@@ -372,6 +454,16 @@ class SchwabEACSource(description_based_source.DescriptionBasedSource):
         for entry in self.entries:
             deduped_results[_get_key_from_entry(entry)] = entry
         self.entries = deduped_results.values()
+        self.dest_acct = {}
+        self.commodity_dest_acct = {}
+        for acct in journal.accounts.values():
+            commodity_dest_key = "schwab_commodity_dest"
+            if commodity_dest_key in acct.meta:
+                commodity = acct.meta[commodity_dest_key]
+                self.commodity_dest_acct[commodity] = acct.account
+            journal_dest_key = "schwab_journal_name"
+            if journal_dest_key in acct.meta:
+                self.dest_acct[acct.meta[journal_dest_key]] = acct.account
         description_based_source.get_pending_and_invalid_entries(
             raw_entries=self.entries,
             journal_entries=journal.all_entries,

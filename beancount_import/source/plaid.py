@@ -142,7 +142,7 @@ def _get_entry_transaction_id(entry: Directive):
 
 
 def get_transaction_ids_seen(journal: JournalEditor) -> \
-        Tuple[Set[str], Dict[str, datetime.date]]:
+    Tuple[Set[str], Dict[str, datetime.date]]:
     transaction_ids = set()
     latest_bal_by_acct = {}
     for entry in journal.all_entries:
@@ -249,11 +249,16 @@ class PlaidSource(Source):
                 journal.accounts, METADATA_ACCT_ID)
         results.add_accounts(account_to_plaid_id.keys())
         missing_accounts = set()  # type: Set[str]
-        journaled_tran_ids, latest_bal_by_acct = get_transaction_ids_seen(journal)
+        journaled_tran_ids, latest_bal_by_acct = get_transaction_ids_seen(
+            journal)
         # dedupes pending transactions from multiple files
         pending_trans_ids: Dict[str, bool] = {}
 
         for entry in self.plaid_entries:
+            # Skip investment accounts for balances, plaid doesn't have the
+            # other records for these accounts.
+            if "balances" in entry and entry.get("type", "") == "investment":
+                continue
             account = plaid_id_to_account.get(entry['account_id'])
             if not account:
                 missing_accounts.add(entry['account_id'])
@@ -265,7 +270,8 @@ class PlaidSource(Source):
                 # for bal entries, use the entry itself as a key
                 transaction_id = pending_entry.entries[0]
                 account = entry.get("account")
-                if account in latest_bal_by_acct and latest_bal_by_acct[account] >= datetime.date.fromisoformat(entry["date"]):
+                if account in latest_bal_by_acct and latest_bal_by_acct[
+                    account] >= datetime.date.fromisoformat(entry["date"]):
                     continue
             if not transaction_id:
                 continue

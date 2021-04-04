@@ -433,11 +433,16 @@ class TransactionEntry(DirectiveEntry):
         return -self.amount
 
     def get_meta(self) -> Meta:
-        return OrderedDict(
+        meta = OrderedDict(
             source_desc=self.description,
             date=self.date,
             **{POSTING_META_ACTION_KEY: self.get_action()},
         )
+        if self.amount.currency != CASH_CURRENCY:
+            # Add amount key so this posting can be split into lots while still
+            # deduping from the original CSV entry.
+            meta[POSTING_META_AMOUNT_KEY] = str(-self.amount)
+        return meta
 
     def get_narration_prefix(self) -> str:
         return self.action.value
@@ -564,8 +569,6 @@ class Sell(TransactionEntry):
         return f"{self.account}:Cash"
 
     def get_postings(self) -> List[Posting]:
-        meta = self.get_meta()
-        meta[POSTING_META_AMOUNT_KEY] = str(-Amount(self.quantity, currency=self.symbol))
         postings = [
             Posting(
                 account=self.get_primary_account(),
@@ -582,7 +585,7 @@ class Sell(TransactionEntry):
                 ),
                 price=Amount(self.price, currency=CASH_CURRENCY),
                 flag=None,
-                meta=meta,
+                meta=self.get_meta(),
             ),
             Posting(
                 account=self.get_other_account(),

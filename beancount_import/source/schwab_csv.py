@@ -146,16 +146,18 @@ class BrokerageAction(enum.Enum):
     WIRE_FUNDS_RECEIVED = "Wire Funds Received"
     MISC_CASH_ENTRY = "Misc Cash Entry"
     JOURNALED_SHARES = "Journaled Shares"
+    SECURITY_TRANSFER = "Security Transfer"
     EXERCISE = "Exchange or Exercise"
 
 
 class BankingEntryType(enum.Enum):
     ACH = "ACH"
+    ATM = "ATM"
+    CHECK = "CHECK"
     INTADJUST = "INTADJUST"
     TRANSFER = "TRANSFER"
     VISA = "VISA"
-    ATM = "ATM"
-    CHECK = "CHECK"
+    WIRE = "WIRE"
 
 
 @dataclass(frozen=True)
@@ -272,6 +274,7 @@ class RawBrokerageEntry(RawEntry):
         if self.action in (BrokerageAction.MONEYLINK_TRANSFER,
                            BrokerageAction.JOURNAL,
                            BrokerageAction.JOURNALED_SHARES,
+                           BrokerageAction.SECURITY_TRANSFER,
                            BrokerageAction.WIRE_FUNDS,
                            BrokerageAction.WIRE_FUNDS_RECEIVED):
             return Transfer(**shared_attrs)
@@ -561,6 +564,8 @@ class Sell(TransactionEntry):
         return f"{self.account}:Cash"
 
     def get_postings(self) -> List[Posting]:
+        meta = self.get_meta()
+        meta[POSTING_META_AMOUNT_KEY] = str(-Amount(self.quantity, currency=self.symbol))
         postings = [
             Posting(
                 account=self.get_primary_account(),
@@ -577,7 +582,7 @@ class Sell(TransactionEntry):
                 ),
                 price=Amount(self.price, currency=CASH_CURRENCY),
                 flag=None,
-                meta=self.get_meta(),
+                meta=meta,
             ),
             Posting(
                 account=self.get_other_account(),
@@ -812,6 +817,7 @@ class EntryProcessor:
 
 POSTING_META_ACTION_KEY = "schwab_action"
 POSTING_META_ACCOUNT_KEY = "schwab_account"
+POSTING_META_AMOUNT_KEY = "schwab_amount"
 INTEREST_INCOME_ACCOUNT_KEY = "interest_income_account"
 DIV_INCOME_ACCOUNT_KEY = "div_income_account"
 FEES_ACCOUNT_KEY = "fees_account"
@@ -987,14 +993,23 @@ class SchwabSource(DescriptionBasedSource):
         action = cast(str, posting.meta.get(POSTING_META_ACTION_KEY, ""))
         units = posting.units
         final_units = None
-        if isinstance(units, Amount) or units is None:
+        # used when you need to split a posting to match multiple lots
+        amount_override = posting.meta.get(POSTING_META_AMOUNT_KEY, "")
+        if amount_override != "":
+            final_units = Amount.from_string(amount_override)
+        if final_units is None:
             final_units = units
-        else:
+        if not isinstance(units, Amount):
             assert False, units
+        date_str = posting.meta.get(POSTING_DATE_KEY)
+        if date_str:
+            date = cast(datetime.date, posting.meta[POSTING_DATE_KEY])
+        else:
+            date = entry.date
         return (
             posting.account,
             action,
-            cast(datetime.date, posting.meta[POSTING_DATE_KEY]),
+            date,
             final_units,
             source_desc,
         )

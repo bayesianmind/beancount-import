@@ -282,7 +282,7 @@ class PlaidSource(Source):
                 continue
             if transaction_id in pending_trans_ids:
                 continue
-            pending_trans_ids[transaction_id] = None
+            pending_trans_ids[transaction_id] = True
             if self.fixed_classifier:
                 self.fixed_classifier(pending_entry)
             results.add_pending_entry(pending_entry)

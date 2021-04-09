@@ -147,7 +147,6 @@ class BrokerageAction(enum.Enum):
     MISC_CASH_ENTRY = "Misc Cash Entry"
     JOURNALED_SHARES = "Journaled Shares"
     SECURITY_TRANSFER = "Security Transfer"
-    EXERCISE = "Exchange or Exercise"
 
 
 class BankingEntryType(enum.Enum):
@@ -569,8 +568,6 @@ class Sell(TransactionEntry):
         return f"{self.account}:Cash"
 
     def get_postings(self) -> List[Posting]:
-        meta = self.get_meta()
-        meta[POSTING_META_AMOUNT_KEY] = str(-Amount(self.quantity, currency=self.symbol))
         postings = [
             Posting(
                 account=self.get_primary_account(),
@@ -587,7 +584,7 @@ class Sell(TransactionEntry):
                 ),
                 price=Amount(self.price, currency=CASH_CURRENCY),
                 flag=None,
-                meta=meta,
+                meta=self.get_meta()
             ),
             Posting(
                 account=self.get_other_account(),

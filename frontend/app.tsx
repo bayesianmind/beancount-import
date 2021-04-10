@@ -211,7 +211,7 @@ class AppComponent
     ...this.props.serverConnection.state,
     journalDirty: false,
     ...this.getSelectedTabsFromUrl(),
-    filterText: ""
+    filterText: "",
     settingsOpen: false,
     settingsCandidatesLeft: false
   };

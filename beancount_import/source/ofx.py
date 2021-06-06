@@ -431,7 +431,7 @@ from beancount.core.number import Decimal
 from beancount.core.amount import Amount
 from beancount.core.position import CostSpec
 from beancount.core.number import MISSING
-from beangulp.importers.ofx_importer import parse_ofx_time
+from beancount_import.source.ofx_beancount import parse_ofx_time
 
 from ..posting_date import get_posting_date, POSTING_DATE_KEY
 from . import ImportResult, Source, SourceResults, InvalidSourceReference

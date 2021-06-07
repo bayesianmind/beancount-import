@@ -172,6 +172,10 @@ def _make_import_result(entry) -> ImportResult:
         amount = Amount(number=sign * D(str(entry['amount'])),
                         currency=entry['iso_currency_code']
                         )
+        if 'category' in meta and meta['category'] == "Payment, Credit Card":
+            counter_account = "Assets:Transfer:ACH"
+        else:
+            counter_account = FIXME_ACCOUNT
         journal_entry = Transaction(
             meta=None,
             date=date,

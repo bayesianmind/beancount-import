@@ -1462,6 +1462,8 @@ class OfxSource(Source):
     def is_posting_cleared(self, posting: Posting):
         if posting.meta is None:
             return False
+        if "401k" in posting.account and posting.account.endswith(":Cash"):
+            return True
         return OFX_FITID_KEY in posting.meta
 
     def prepare(self, journal: JournalEditor, results: SourceResults):

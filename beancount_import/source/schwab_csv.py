@@ -14,9 +14,27 @@ you have a structure like this:
 And you download your transaction history CSV into `transactions/` and your positions
 statement CSV into `positions/`, then you could specify your beancount-import source like
 this:
+
     dict(module="beancount_import.source.schwab_csv",
-         transaction_csv_filenames=glob.glob("data/schwab/transactions/*.CSV"),
-         position_csv_filenames=glob.glob("data/schwab/positions/*.CSV"),
+         transaction_csv_filenames=glob.glob("data/schwab/transactions/*.csv"),
+         position_csv_filenames=glob.glob("data/schwab/positions/*.csv"),
+    )
+
+The importer can also optionally make use of Schwab's lot details CSV downloads in order
+to correctly fill in cost-basis on stock sales, even for sales of stock from multiple
+lots. For this to work reliably, you should ensure that you download the lot details
+regularly (ideally at least once between each transaction involving a given commodity).
+Downloading lot details CSV by hand could be quite tedious; the
+[finance-dl](https://github.com/jbms/finance-dl) package is recommended.
+
+To use lot details, add a `lots_csv_filenames` key to your beancount-import source.
+Finance-dl will place lot details under `positions/lots/` with one directory per date
+downloaded and one file per commodity. So your source spec might look like this:
+
+    dict(module="beancount_import.source.schwab_csv",
+         transaction_csv_filenames=glob.glob("data/schwab/transactions/*.csv"),
+         position_csv_filenames=glob.glob("data/schwab/positions/*.csv"),
+         lots_csv_filenames=glob.glob("data/schwab/positions/lots/*/*.csv"),
     )
 
 This importer also makes use of certain metadata keys on your accounts. In order to label
@@ -64,6 +82,15 @@ unsupported action, you'll get a `ValueError: 'Foo' is not a valid BrokerageActi
 `ValueError: 'Foo' is not a valid BankingEntryType` for banking files. Please
 file an issue (and ideally a pull request!) to add support for that action.
 
+* If you have multiple transactions involving a commodity between two downloads of lot
+details (particularly two different sales), the importer may not be able to infer the lots
+involved in each sale. In this case it will fall back to empty cost-basis on the sale and
+you may have to fill it in manually in order to avoid ambiguity errors from beancount.
+
+* The lot details logic assumes that if you have lot details for any commodity at a given
+point in time, you have downloaded lot details for all commodities. If lot details are
+missing for a commodity, it will assume that's because you no longer hold that commodity.
+
 """
 from __future__ import annotations
 
@@ -83,11 +110,13 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Sequence,
     Set,
     Tuple,
     Type,
+    TypeVar,
     Union,
     cast,
 )
@@ -121,36 +150,44 @@ from beancount_import.unbook import group_postings_by_meta, unbook_postings
 CASH_CURRENCY="USD"
 
 class BrokerageAction(enum.Enum):
-    CASH_DIVIDEND = "Cash Dividend"
-    PRIOR_YEAR_CASH_DIVIDEND = "Pr Yr Cash Div"
-    SPECIAL_DIVIDEND = "Special Dividend"
-    QUALIFIED_DIVIDEND = "Qualified Dividend"
-    BUY = "Buy"
-    SELL = "Sell"
-    MONEYLINK_TRANSFER = "MoneyLink Transfer"
-    BANK_INTEREST = "Bank Interest"
-    JOURNAL = "Journal"
-    STOCK_PLAN_ACTIVITY = "Stock Plan Activity"
+    # Please keep these alphabetized:
     ADR_MGMT_FEE = "ADR Mgmt Fee"
-    SERVICE_FEE = "Service Fee"
-    FOREIGN_TAX_PAID = "Foreign Tax Paid"
-    MARGIN_INTEREST = "Margin Interest"
-    BUY_TO_OPEN = "Buy to Open"
+    BANK_INTEREST = "Bank Interest"
+    BOND_INTEREST = "Bond Interest"
+    BUY = "Buy"
     BUY_TO_CLOSE = "Buy to Close"
-    SELL_TO_OPEN = "Sell to Open"
-    SELL_TO_CLOSE = "Sell to Close"
-    REINVEST_SHARES = "Reinvest Shares"
-    REINVEST_DIVIDEND = "Reinvest Dividend"
+    BUY_TO_OPEN = "Buy to Open"
+    CASH_DIVIDEND = "Cash Dividend"
+    EXPIRED = "Expired"
+    FOREIGN_TAX_PAID = "Foreign Tax Paid"
+    JOURNAL = "Journal"
+    JOURNALED_SHARES = "Journaled Shares"
+    LONG_TERM_CAP_GAIN = "Long Term Cap Gain"
+    MARGIN_INTEREST = "Margin Interest"
+    MISC_CASH_ENTRY = "Misc Cash Entry"
+    MONEYLINK_TRANSFER = "MoneyLink Transfer"
+    PRIOR_YEAR_CASH_DIVIDEND = "Pr Yr Cash Div"
+    PRIOR_YEAR_SPECIAL_DIVIDEND = "Pr Yr Special Div"
+    PROMOTIONAL_AWARD = "Promotional Award"
     QUAL_DIV_REINVEST = "Qual Div Reinvest"
+    QUALIFIED_DIVIDEND = "Qualified Dividend"
+    REINVEST_DIVIDEND = "Reinvest Dividend"
+    REINVEST_SHARES = "Reinvest Shares"
+    SECURITY_TRANSFER = "Security Transfer"
+    SELL = "Sell"
+    SELL_TO_CLOSE = "Sell to Close"
+    SELL_TO_OPEN = "Sell to Open"
+    SERVICE_FEE = "Service Fee"
+    SHORT_TERM_CAP_GAIN = "Short Term Cap Gain"
+    SPECIAL_DIVIDEND = "Special Dividend"
+    STOCK_MERGER = "Stock Merger"
+    STOCK_PLAN_ACTIVITY = "Stock Plan Activity"
+    STOCK_SPLIT = "Stock Split"
     WIRE_FUNDS = "Wire Funds"
     WIRE_FUNDS_RECEIVED = "Wire Funds Received"
-    MISC_CASH_ENTRY = "Misc Cash Entry"
-    JOURNALED_SHARES = "Journaled Shares"
-    SECURITY_TRANSFER = "Security Transfer"
-    EXERCISE = "Exercise"
-
 
 class BankingEntryType(enum.Enum):
+    # Please keep these alphabetized:
     ACH = "ACH"
     ATM = "ATM"
     CHECK = "CHECK"
@@ -159,6 +196,11 @@ class BankingEntryType(enum.Enum):
     VISA = "VISA"
     WIRE = "WIRE"
 
+@dataclass(frozen=True)
+class MergerSpecification:
+    symbol: str
+    quantity: Optional[Decimal]
+    description: str
 
 @dataclass(frozen=True)
 class RawEntry:
@@ -173,7 +215,7 @@ class RawEntry:
         return cast(str, account_meta.get(key, FIXME_ACCOUNT))
 
     def get_processed_entry(
-        self, account: str, account_meta: Meta
+        self, account: str, account_meta: Meta, lots: LotsDB
     ) -> Optional[TransactionEntry]:
         raise NotImplementedError("subclasses must implement get_processed_entry")
 
@@ -185,7 +227,7 @@ class RawBankEntry(RawEntry):
     running_balance: Amount
 
     def get_processed_entry(
-        self, account: str, account_meta: Meta
+        self, account: str, account_meta: Meta, lots: LotsDB
     ) -> Optional[TransactionEntry]:
         interest_account = self.get_meta_account(account_meta,
                                             INTEREST_INCOME_ACCOUNT_KEY)
@@ -223,9 +265,10 @@ class RawBrokerageEntry(RawEntry):
     quantity: Optional[Decimal]
     price: Optional[Decimal]
     fees: Optional[Decimal]
+    merger_spec: Optional[MergerSpecification]
 
     def get_processed_entry(
-        self, account: str, account_meta: Meta
+        self, account: str, account_meta: Meta, lots: LotsDB
     ) -> Optional[TransactionEntry]:
         capital_gains_account = self.get_meta_account(account_meta, CAPITAL_GAINS_ACCOUNT_KEY)
         fees_account = self.get_meta_account(account_meta, FEES_ACCOUNT_KEY)
@@ -239,6 +282,9 @@ class RawBrokerageEntry(RawEntry):
             symbol = self.symbol
             assert symbol, symbol
             amount = Amount(quantity, currency=symbol)
+        if self.action == BrokerageAction.EXPIRED:
+            # could expire/settle to non-zero value, otherwise turn the None to zero
+            amount = Amount(Decimal(0), currency=CASH_CURRENCY) if self.amount is None else self.amount
         if amount is None and self.quantity is not None:
             amount = Amount(self.quantity, self.symbol)
         assert amount is not None, self
@@ -251,11 +297,27 @@ class RawBrokerageEntry(RawEntry):
             filename=self.filename,
             line=self.line,
         )
+        if self.action == BrokerageAction.STOCK_MERGER:
+            assert self.quantity is not None
+            assert self.merger_spec is not None
+            assert self.merger_spec.quantity is not None
+            return Merger(
+                    fees_account=fees_account,
+                    symbol=self.symbol,
+                    quantity=self.quantity,
+                    price=self.price,
+                    fees=self.fees,
+                    merger_spec=self.merger_spec,
+                    **shared_attrs
+            )
         if self.action == BrokerageAction.STOCK_PLAN_ACTIVITY:
-            return StockPlanActivity(symbol=self.symbol, **shared_attrs)
+            acct = account_meta["schwab_account"]
+            cost = lots.get_cost(acct, self.symbol, self.date)
+            return StockPlanActivity(symbol=self.symbol, cost=cost, **shared_attrs)
         if self.action in (
             BrokerageAction.CASH_DIVIDEND,
             BrokerageAction.PRIOR_YEAR_CASH_DIVIDEND,
+            BrokerageAction.PRIOR_YEAR_SPECIAL_DIVIDEND,
             BrokerageAction.SPECIAL_DIVIDEND,
             BrokerageAction.QUALIFIED_DIVIDEND,
             BrokerageAction.QUAL_DIV_REINVEST,
@@ -271,6 +333,25 @@ class RawBrokerageEntry(RawEntry):
                 interest_account=interest_account,
                 **shared_attrs,
             )
+        if self.action == BrokerageAction.STOCK_SPLIT:
+            acct = account_meta["schwab_account"]
+            assert self.quantity is not None
+            lot_splits = lots.split(acct, self.symbol, self.date, self.quantity)
+            return StockSplit(
+                lot_splits=lot_splits,
+                **shared_attrs,
+            )
+        if self.action == BrokerageAction.PROMOTIONAL_AWARD:
+            return PromotionalAward(
+                interest_account=interest_account,
+                **shared_attrs,
+            )
+        if self.action == BrokerageAction.BOND_INTEREST:
+            return BondInterest(
+                symbol=self.symbol,
+                interest_account=interest_account,
+                **shared_attrs,
+            )
         if self.action in (BrokerageAction.MONEYLINK_TRANSFER,
                            BrokerageAction.JOURNAL,
                            BrokerageAction.JOURNALED_SHARES,
@@ -280,12 +361,14 @@ class RawBrokerageEntry(RawEntry):
             return Transfer(**shared_attrs)
         if self.action in (BrokerageAction.SELL,
                             BrokerageAction.SELL_TO_OPEN,
-                            BrokerageAction.SELL_TO_CLOSE,
-                            BrokerageAction.EXERCISE
+                            BrokerageAction.SELL_TO_CLOSE
                            ):
             quantity = self.quantity
             assert quantity is not None
             price = self.price
+            assert price is not None
+            acct = account_meta["schwab_account"]
+            lot_info = lots.get_sale_lots(acct, self.symbol, self.date, quantity)
             return Sell(
                 capital_gains_account=capital_gains_account,
                 fees_account=fees_account,
@@ -293,6 +376,7 @@ class RawBrokerageEntry(RawEntry):
                 price=price,
                 quantity=quantity,
                 fees=self.fees,
+                lots=lot_info,
                 **shared_attrs,
             )
         if self.action in (BrokerageAction.BUY,
@@ -313,6 +397,9 @@ class RawBrokerageEntry(RawEntry):
                 fees=self.fees,
                 **shared_attrs,
             )
+        if self.action in (BrokerageAction.SHORT_TERM_CAP_GAIN, BrokerageAction.LONG_TERM_CAP_GAIN):
+            return FundGainsDistribution(symbol=self.symbol, capital_gains_account=capital_gains_account, **shared_attrs)
+
         if self.action in (BrokerageAction.ADR_MGMT_FEE,
                            BrokerageAction.SERVICE_FEE,
                            BrokerageAction.MISC_CASH_ENTRY):
@@ -323,7 +410,45 @@ class RawBrokerageEntry(RawEntry):
             return TaxPaid(taxes_account=taxes_account, **shared_attrs)
         if self.action == BrokerageAction.MARGIN_INTEREST:
             return MarginInterest(**shared_attrs)
+        if self.action == BrokerageAction.EXPIRED:
+            assert self.quantity is not None
+            price = Decimal(0) if self.price is None else self.price
+            lot_info = lots.get_sale_lots(account_meta["schwab_account"], self.symbol, self.date, self.quantity)
+            if self.quantity > 0:
+                # an expiring long option means it is sold at the end => the posting has a negative 'quantity'
+                return Buy(
+                        capital_gains_account=capital_gains_account,
+                        fees_account=fees_account,
+                        symbol=self.symbol,
+                        quantity=self.quantity,
+                        price=price,
+                        fees=self.fees,
+                        **shared_attrs
+                        )
+            else:
+                return Sell(
+                        capital_gains_account=capital_gains_account,
+                        fees_account=fees_account,
+                        symbol=self.symbol,
+                        quantity=self.quantity,
+                        price=price,
+                        fees=self.fees,
+                        lots=lot_info,
+                        **shared_attrs
+                        )
         assert False, self.action
+
+
+@dataclass(frozen=True)
+class RawLot:
+    """A single cost-basis lot of a single holding from Lot Details CSV."""
+    symbol: str
+    account: str
+    asof: datetime.datetime
+    opened: datetime.datetime
+    quantity: Decimal
+    price: Decimal
+    cost: Decimal
 
 
 class SharedAttrsDict(TypedDict):
@@ -482,14 +607,19 @@ class MarginInterest(TransactionEntry):
 @dataclass(frozen=True)
 class StockPlanActivity(TransactionEntry):
     symbol: str
+    cost: Optional[Decimal]
 
     def get_cost(self) -> Optional[CostSpec]:
-        # TODO need a real cost here, not included in transactions CSV, probably need to
-        # fill it in from parsing cost-basis lots CSV post-transaction.
+        cost = self.cost
+        if cost is None:
+            cost = Decimal("1")
+            currency = "FIXME"
+        else:
+            currency = CASH_CURRENCY
         return CostSpec(
-            number_per=Decimal("1"),
+            number_per=cost,
             number_total=None,
-            currency="FIXME",
+            currency=currency,
             date=None,
             label=None,
             merge=None,
@@ -519,6 +649,20 @@ class CashDividend(TransactionEntry):
     def get_narration_prefix(self) -> str:
         return "INCOME - DIV"
 
+@dataclass(frozen=True)
+class BondInterest(TransactionEntry):
+    symbol: str
+    interest_account: str
+
+    def get_sub_account(self) -> Optional[str]:
+        return "Cash"
+
+    def get_other_account(self) -> str:
+        return f"{self.interest_account}:{self.symbol}"
+
+    def get_narration_prefix(self) -> str:
+        return "BOND INTEREST"
+
 
 @dataclass(frozen=True)
 class BankInterest(TransactionEntry):
@@ -538,6 +682,40 @@ class BankInterest(TransactionEntry):
 
 
 @dataclass(frozen=True)
+class PromotionalAward(TransactionEntry):
+    interest_account: str
+
+    def get_sub_account(self) -> Optional[str]:
+        if self.action == BankingEntryType.INTADJUST:
+            # Checking interest, cash is held in main account
+            return None
+        return "Cash"
+
+    def get_other_account(self) -> str:
+        return self.interest_account
+
+    def get_narration_prefix(self) -> str:
+        return "PROMOTIONAL AWARD"
+
+@dataclass(frozen=True)
+class FundGainsDistribution(TransactionEntry):
+    """
+    ETFs and Mutual Funds can have distributions of capital gains
+    generated by internal activity.
+    """
+    symbol: str
+    capital_gains_account: str
+
+    def get_sub_account(self) -> Optional[str]:
+        return "Cash"
+
+    def get_other_account(self) -> str:
+        return f"{self.capital_gains_account}:{self.symbol}"
+
+    def get_narration_prefix(self) -> str:
+        return "INCOME - CAP GAINS"
+
+@dataclass(frozen=True)
 class Transfer(TransactionEntry):
     def get_sub_account(self) -> Optional[str]:
         if self.amount.currency != CASH_CURRENCY:
@@ -549,6 +727,60 @@ class Transfer(TransactionEntry):
 
 
 @dataclass(frozen=True)
+class StockSplit(TransactionEntry):
+    lot_splits: List[LotSplit]
+
+    def get_sub_account(self) -> Optional[str]:
+        return self.amount.currency
+
+    def get_postings(self) -> List[Posting]:
+        postings = []
+        if not self.lot_splits:
+            return super().get_postings()
+
+        for split in self.lot_splits:
+            postings.append(
+                Posting(
+                    account=self.get_primary_account(),
+                    units=Amount(-split.prev_qty, self.amount.currency),
+                    cost=CostSpec(
+                        number_per=split.prev_cost,
+                        number_total=None,
+                        currency=CASH_CURRENCY,
+                        date=split.date,
+                        label=None,
+                        merge=None,
+                    ),
+                    price=None,
+                    flag=None,
+                    meta=self.get_meta(),
+                )
+            )
+            postings.append(
+                Posting(
+                    account=self.get_primary_account(),
+                    units=Amount(split.new_qty, self.amount.currency),
+                    cost=CostSpec(
+                        number_per=split.new_cost,
+                        number_total=None,
+                        currency=CASH_CURRENCY,
+                        date=split.date,
+                        label=None,
+                        merge=None,
+                    ),
+                    price=None,
+                    flag=None,
+                    meta=self.get_meta(),
+                )
+            )
+
+        return postings
+
+    def get_narration_prefix(self) -> str:
+        return "STOCKSPLIT"
+
+
+@dataclass(frozen=True)
 class Sell(TransactionEntry):
     capital_gains_account: str
     fees_account: str
@@ -556,6 +788,7 @@ class Sell(TransactionEntry):
     quantity: Decimal
     price: Decimal
     fees: Optional[Decimal]
+    lots: Mapping[Decimal, Decimal]
 
     def get_sub_account(self) -> Optional[str]:
         return self.symbol
@@ -564,16 +797,19 @@ class Sell(TransactionEntry):
         return f"{self.account}:Cash"
 
     def get_postings(self) -> List[Posting]:
+        lots = list(self.lots.items())
+        cost_currency = CASH_CURRENCY
+        if not lots:
+            lots = [(MISSING, self.quantity)]
+            cost_currency = MISSING
         postings = [
             Posting(
                 account=self.get_primary_account(),
-                units=-Amount(self.quantity, currency=self.symbol),
-                # TODO handle cost basis by parsing cost-basis lots CSV, so we don't end
-                # up getting beancount errors due to ambiguity
+                units=-Amount(lot_qty, currency=self.symbol),
                 cost=CostSpec(
-                    number_per=MISSING,
+                    number_per=lot_cost,
                     number_total=None,
-                    currency=MISSING,
+                    currency=cost_currency,
                     date=None,
                     label=None,
                     merge=None,
@@ -581,7 +817,10 @@ class Sell(TransactionEntry):
                 price=Amount(self.price, currency=CASH_CURRENCY),
                 flag=None,
                 meta=self.get_meta(),
-            ),
+            )
+            for lot_cost, lot_qty in lots
+        ]
+        postings.append(
             Posting(
                 account=self.get_other_account(),
                 units=self.amount,
@@ -589,8 +828,8 @@ class Sell(TransactionEntry):
                 price=None,
                 flag=None,
                 meta=self.get_meta(),
-            ),
-        ]
+            )
+        )
         if self.action != BrokerageAction.SELL_TO_OPEN:
             # too early to realize gains/losses when opening a short position
             postings.append(
@@ -620,6 +859,8 @@ class Sell(TransactionEntry):
     def get_narration_prefix(self) -> str:
         if self.action in (BrokerageAction.SELL_TO_OPEN, BrokerageAction.SELL_TO_CLOSE):
             return "SELLOPT"
+        elif self.action == BrokerageAction.EXPIRED:
+            return "SELLOPT - EXPIRED"
         else:
             return "SELLSTOCK"
 
@@ -670,7 +911,7 @@ class Buy(TransactionEntry):
                 meta=self.get_meta(),
             ),
         ]
-        if self.action == BrokerageAction.BUY_TO_CLOSE:
+        if self.action in (BrokerageAction.BUY_TO_CLOSE, BrokerageAction.EXPIRED):
             # need to record gains when closing a short position
             postings.append(
                 Posting(
@@ -699,6 +940,8 @@ class Buy(TransactionEntry):
     def get_narration_prefix(self) -> str:
         if self.action in (BrokerageAction.BUY_TO_OPEN, BrokerageAction.BUY_TO_CLOSE):
             return "BUYOPT"
+        elif self.action == BrokerageAction.EXPIRED:
+            return "BUYOPT - EXPIRED"
         else:
             return "BUYSTOCK"
 
@@ -708,6 +951,76 @@ class Buy(TransactionEntry):
     def get_accounts(self) -> List[str]:
         return [self.get_primary_account(), self.get_other_account()]
 
+
+@dataclass(frozen=True)
+class Merger(TransactionEntry):
+    fees_account: str
+    symbol: str
+    quantity: Decimal
+    price: Optional[Decimal]
+    merger_spec: MergerSpecification
+    fees: Optional[Decimal]
+
+    def get_sub_account(self) -> Optional[str]:
+        return self.symbol
+
+    def get_other_account(self) -> str:
+        return f"{self.account}:{self.merger_spec.symbol}"
+
+    def get_postings(self) -> List[Posting]:
+        postings = [
+            Posting(
+                account=self.get_primary_account(),
+                units=Amount(self.quantity, currency=self.symbol),
+                cost=CostSpec(
+                    number_per=self.price,
+                    number_total=None,
+                    currency=CASH_CURRENCY,
+                    date=None,
+                    # at the moment requires manually choosing the lot
+                    label=None,
+                    merge=None,
+                ),
+                price=None,
+                flag=None,
+                meta=self.get_meta(),
+            ),
+            Posting(
+                account=self.get_other_account(),
+                units=Amount(self.merger_spec.quantity, currency=self.merger_spec.symbol),
+                cost=CostSpec(
+                    number_per=None,
+                    number_total=None,
+                    currency=CASH_CURRENCY,
+                    date=None,
+                    label="merger",
+                    merge=None
+                ),
+                price=None,
+                flag=None,
+                meta=self.get_meta(),
+            ),
+        ]
+        fees = self.fees
+        # Mergers should not have fees, but just in case
+        if fees is not None:
+            postings.append(
+                Posting(
+                    account=self.fees_account,
+                    units=Amount(self.fees, currency=CASH_CURRENCY),
+                    cost=None,
+                    price=None,
+                    flag=None,
+                    meta={},
+                )
+            )
+        return postings
+
+    def get_narration_prefix(self) -> str:
+        return f"STOCKMERGER - {self.merger_spec.description}"
+
+    def get_accounts(self) -> List[str]:
+        return [self.get_primary_account(), self.get_other_account()]
 
 @dataclass(frozen=True)
 class RawPosition:
@@ -774,12 +1087,13 @@ class BalanceEntry(DirectiveEntry):
 
 
 class EntryProcessor:
-    def __init__(self, journal: JournalEditor) -> None:
+    def __init__(self, journal: JournalEditor, lots: LotsDB) -> None:
         (
             self.account_to_schwab,
             self.schwab_to_account,
         ) = get_account_mapping(journal.accounts, POSTING_META_ACCOUNT_KEY)
         self.journal = journal
+        self.lots = lots
         self.missing_accounts: Set[str] = set()
         self.found_accounts: Set[str] = set()
 
@@ -789,7 +1103,7 @@ class EntryProcessor:
             self.missing_accounts.add(raw_entry.account)
             return None
         account_meta = self.journal.accounts[account].meta
-        return raw_entry.get_processed_entry(account, account_meta)
+        return raw_entry.get_processed_entry(account, account_meta, self.lots)
 
     def process_entries(
         self, raw_entries: Iterable[RawEntry]
@@ -820,7 +1134,6 @@ DIV_INCOME_ACCOUNT_KEY = "div_income_account"
 FEES_ACCOUNT_KEY = "fees_account"
 CAPITAL_GAINS_ACCOUNT_KEY = "capital_gains_account"
 TAXES_ACCOUNT_KEY = "taxes_account"
-DATE_FORMAT = "%m/%d/%Y"
 TITLE_RE = re.compile(r'"?Transactions\s*for (?:Checking )?account '
                       r'(?P<account>.+) as of '
                       r'(?P<when>.+)"?')
@@ -831,6 +1144,7 @@ STRIP_FROM_SYMBOL_RE = re.compile(r'[^\d\w]')
 class SchwabSourceSpecDict(TypedDict):
     transaction_csv_filenames: Sequence[str]
     position_csv_filenames: Sequence[str]
+    lots_csv_filenames: Optional[Sequence[str]]
 
 
 LogStatusCallable = Callable[[str], None]
@@ -845,6 +1159,7 @@ PriceKey = Tuple[str, datetime.date, Amount]
 
 
 def load(spec: SchwabSourceSpecDict, log_status: LogStatusCallable):
+    spec.setdefault("lots_csv_filenames", [])
     return SchwabSource(**spec, log_status=log_status)
 
 
@@ -855,17 +1170,22 @@ class SchwabSource(DescriptionBasedSource):
         self,
         transaction_csv_filenames: Sequence[str],
         position_csv_filenames: Sequence[str],
+        lots_csv_filenames: Optional[Sequence[str]],
         log_status: LogStatusCallable,
     ) -> None:
         super().__init__(log_status)
         self.transaction_csv_filename = transaction_csv_filenames
         self.position_csv_filenames = position_csv_filenames
+        self.lots_csv_filenames = lots_csv_filenames or []
         self.raw_entries: List[RawEntry] = []
         self.raw_positions: List[RawPosition] = []
         for csv_filename in transaction_csv_filenames:
             self.raw_entries.extend(_load_transactions(csv_filename))
         for csv_filename in position_csv_filenames:
             self.raw_positions.extend(_load_positions(csv_filename))
+        self.lots = LotsDB()
+        for csv_filename in self.lots_csv_filenames:
+            self.lots.load(_load_lots_csv(csv_filename))
 
     def get_example_key_value_pairs(self, transaction: Transaction, posting: Posting) -> Dict[str, Union[str, Sequence[str]]]:
         base = super().get_example_key_value_pairs(transaction, posting)
@@ -876,7 +1196,7 @@ class SchwabSource(DescriptionBasedSource):
 
     def prepare(self, journal: JournalEditor, results: SourceResults) -> None:
 
-        processor = EntryProcessor(journal)
+        processor = EntryProcessor(journal, self.lots)
         account_set = set(processor.account_to_schwab.keys())
         base_accounts = tuple(f"{a}:" for a in account_set)
         account_set.update(a for a in journal.accounts if a.startswith(base_accounts))
@@ -1003,6 +1323,177 @@ class SchwabSource(DescriptionBasedSource):
         )
 
 
+@dataclass(frozen=True)
+class LotSplit:
+    date: datetime.date
+    prev_cost: Decimal
+    prev_qty: Decimal
+    new_cost: Decimal
+    new_qty: Decimal
+
+
+class LotsDB:
+    """In-memory database of historical lot information from Schwab lot details CSVs.
+
+    Can answer these queries:
+        - Cost basis of the shares of symbol X in acct Y acquired on date Z?
+        - Cost bases of the N shares of symbol X sold from acct Y on date Z?
+        - LotSplits for a split of symbol X in acct Y on date Z, adding N shares?
+
+    """
+    def __init__(self) -> None:
+        self.holdings: Dict[Tuple[str, str], HoldingLotsDB] = {}
+        self.asof_datetimes: Set[datetime.datetime] = set()
+
+    def load(self, raw_lots: Iterable[RawLot]) -> None:
+        for raw_lot in raw_lots:
+            self.asof_datetimes.add(raw_lot.asof)
+            db = self._get_db(raw_lot.account, raw_lot.symbol)
+            db.add(raw_lot)
+        self.zero_fill()
+
+    def zero_fill(self):
+        """Fill zero quantities for all holdings without a quantity on an asof date."""
+        for db in self.holdings.values():
+            db.zero_fill(self.asof_datetimes)
+
+    def convert_account(self, acct: str) -> str:
+        # Transactions and positions CSV use accounts in the form "Brokerage XXXX-1234",
+        # but Lots CSV uses just "XXXX-1234"
+        return acct.split()[-1]
+
+    def get_cost(
+        self, account: str, symbol: str, date: datetime.date,
+    ) -> Optional[Decimal]:
+        """Get cost of lot of `symbol` opened most recently before `date`.
+
+        Return None if it can't be determined given lot info in db.
+        """
+        db = self.holdings.get((self.convert_account(account), symbol))
+        return db.get_cost(date) if db else None
+
+    def get_sale_lots(
+        self, account: str, symbol: str, date: datetime.date, quantity_sold: Decimal,
+    ) -> Mapping[Decimal, Decimal]:
+        """Get costs of lots of `symbol` from which `quantity_sold` were sold on `date`.
+
+        Key of returned mapping is lot cost, value is quantity sold from that lot.
+        `quantity_sold` may have come from multiple lots in which case returned mapping
+        will have multiple entries.
+
+        If the total quantity we have recorded as sold from the holding in that time
+        period doesn't match `quantity_sold`, return empty dict; we don't want to guess in
+        the face of ambiguity.
+
+        The assumption here is that we will download lot details at least once between
+        every sale of a given holding, so things should match up exactly; if they don't,
+        we revert to unknown cost.
+        """
+        db = self.holdings.get((self.convert_account(account), symbol))
+        return db.get_sale_lots(date, quantity_sold) if db else {}
+
+    def split(
+        self, account: str, symbol: str, date: datetime.date, quantity_added: Decimal,
+    ) -> List[LotSplit]:
+        """Get LotSplit for each lot of `symbol` in `account` as of `date`."""
+        db = self.holdings.get((self.convert_account(account), symbol))
+        return db.split(date, quantity_added) if db else []
+
+    def _get_db(self, account: str, symbol: str) -> HoldingLotsDB:
+        key = (account, symbol)
+        db = self.holdings.get(key)
+        if db is None:
+            db = self.holdings[key] = HoldingLotsDB(*key)
+        return db
+
+
+class HoldingLotsDB:
+    """Historical information for lots of a single holding in a single account."""
+    def __init__(self, account: str, symbol: str) -> None:
+        self.account = account
+        self.symbol = symbol
+        # We uniquely identify a lot by (opened, cost). (Schwab will track separate
+        # lots opened at the same moment with the same cost, but they don't give us any
+        # unique key to distinguish these by, so the best we can do is collapse them, and
+        # that's good enough for our query needs anyway, since all we ever want to get out
+        # is a cost.) So this dict maps (opened, cost) to a per-lot dict mapping as-of
+        # datetime to quantity of shares in the lot at that point in time.
+        self.lots: Dict[Tuple[datetime.datetime, Decimal], Dict[datetime.datetime, Decimal]] = {}
+
+    def add(self, raw_lot: RawLot) -> None:
+        assert raw_lot.account == self.account, raw_lot.account
+        assert raw_lot.symbol == self.symbol, raw_lot.symbol
+        lot = self.lots.setdefault((raw_lot.opened, raw_lot.cost), {})
+        lot[raw_lot.asof] = lot.get(raw_lot.asof, 0) + raw_lot.quantity
+
+    def zero_fill(self, asof_datetimes: Set[datetime.datetime]) -> None:
+        for dt in asof_datetimes:
+            for lot in self.lots.values():
+                lot.setdefault(dt, Decimal("0"))
+
+    def get_cost(self, date: datetime.date) -> Optional[Decimal]:
+        ret = None
+        for opened, cost in sorted(self.lots.keys()):
+            if opened.date() > date:
+                break
+            ret = cost
+        return ret
+
+    def get_sale_lots(
+        self, date: datetime.date, quantity_sold: Decimal
+    ) -> Mapping[Decimal, Decimal]:
+        ret: Dict[Decimal, Decimal] = {}
+        for (opened, cost), quantities in self.lots.items():
+            last_qty = None
+            last_asof = None
+            for asof, qty in sorted(quantities.items()):
+                if last_asof and (last_asof.date() < date < asof.date()):
+                    # the given date falls in this interval
+                    sold = last_qty - qty
+                    if sold > quantity_sold:
+                        # Too many sold; return empty dict
+                        return {}
+                    if sold:
+                        quantity_sold -= sold
+                        ret[cost] = sold
+                    break
+                last_qty = qty
+                last_asof = asof
+
+        # We weren't able to account for all of `quantity_sold`; return empty dict
+        if quantity_sold:
+            return {}
+        return ret
+
+    def split(self, date: datetime.date, quantity_added: Decimal) -> List[LotSplit]:
+        existing_quantity = Decimal("0")
+        existing_lots: List[Tuple[datetime.date, Decimal, Decimal]] = []
+        for (opened, cost), quantities in self.lots.items():
+            current_lot: Optional[Tuple[datetime.date, Decimal, Decimal]] = None
+            for asof, qty in sorted(quantities.items()):
+                if asof.date() > date:
+                    break
+                current_lot = (opened.date(), cost, qty)
+            if current_lot is not None and current_lot[2] > Decimal("0"):
+                existing_quantity += current_lot[2]
+                existing_lots.append(current_lot)
+        ratio = (existing_quantity + quantity_added) / existing_quantity
+        splits: List[LotSplit] = []
+        for (date, cost, qty) in existing_lots:
+            new_cost = cost / ratio
+            new_qty = qty * ratio
+            splits.append(
+                LotSplit(
+                    date=date,
+                    prev_cost=cost,
+                    prev_qty=qty,
+                    new_cost=new_cost,
+                    new_qty=new_qty,
+                )
+            )
+        return splits
+
+
 def _load_transactions(filename: str) -> List[RawEntry]:
     expected_brokerage_field_names = [
         "Date",
@@ -1048,6 +1539,7 @@ def _load_banking_transactions(reader: csv.DictReader, account: str, filename):
     non_posting_patterns = [
         "Pending Transactions are not reflected within this sort criterion.",
         "Posted Transactions",
+        "There were no transactions for the search criteria you selected."
     ]
     for lno, row in enumerate(reader):
         # First two rows are info messages.
@@ -1089,6 +1581,7 @@ def _load_brokerage_transactions(reader: csv.DictReader, account: str,
                                  filename):
     entries = []
     found_total_line = False
+    merger_spec = None
     for lno, row in enumerate(reader):
         # Final row in CSV is not a real transaction
         if row["Date"] == "Transactions Total":
@@ -1108,6 +1601,10 @@ def _load_brokerage_transactions(reader: csv.DictReader, account: str,
         if OPTION_RE.match(row["Symbol"]) and quantity:
             # this is an option, sold in lots of 100
             quantity *= 100
+        if action == BrokerageAction.STOCK_MERGER and merger_spec is None:
+            # special logic: next CSV line is the second posting related to the merger
+            merger_spec = MergerSpecification(symbol, quantity, description)
+            continue
         entries.append(
             RawBrokerageEntry(
                 account=account,
@@ -1119,10 +1616,12 @@ def _load_brokerage_transactions(reader: csv.DictReader, account: str,
                 price=price,
                 fees=fees,
                 amount=Amount(amount, currency=CASH_CURRENCY) if amount else None,
+                merger_spec=merger_spec,
                 filename=filename,
                 line=lno + 2,
             )
         )
+        merger_spec = None
     return entries
 
 
@@ -1262,6 +1761,64 @@ def _load_positions_csv(
     return entries
 
 
+LOT_DETAILS_TITLE_RE = re.compile(
+    r'"(?P<symbol>[A-Z]+) Lot Details for (?P<account>.+) as of (?P<datetime>.+)"'
+)
+
+
+def _load_lots_csv(filename: str) -> Sequence[RawLot]:
+    expected_field_names = [
+        "Open Date",
+        "Quantity",
+        "Price",
+        "Cost/Share",
+        "Market Value",
+        "Cost Basis",
+        "Gain/Loss $",
+        "Gain/Loss %",
+        "Holding Period",
+        "",
+    ]
+    filename = os.path.abspath(filename)
+    entries: List[RawLot] = []
+    lines: List[str] = []
+    with open(filename, "r", encoding="utf-8", newline="") as csvfile:
+        title = csvfile.readline()
+        match = LOT_DETAILS_TITLE_RE.match(title)
+        assert match, title
+        groups = match.groupdict()
+        symbol = groups["symbol"]
+        account = groups["account"]
+        asof = _convert_title_datetime(match.groupdict()["datetime"])
+        empty = csvfile.readline()
+        assert not empty.strip(), empty
+        reader = csv.DictReader(csvfile)
+        assert reader.fieldnames == expected_field_names, reader.fieldnames
+        for row in reader:
+            if row["Open Date"] == "Total":
+                break
+            entries.append(
+                RawLot(
+                    account=account,
+                    symbol=symbol,
+                    asof=asof,
+                    opened=_convert_datetime(row["Open Date"]),
+                    quantity=none_throws(_convert_decimal(row["Quantity"])),
+                    price=none_throws(_convert_decimal(row["Price"])),
+                    cost=none_throws(_convert_decimal(row["Cost/Share"])),
+                )
+            )
+    return entries
+
+
+T = TypeVar("T")
+
+
+def none_throws(x: Optional[T]) -> T:
+    assert x is not None
+    return x
+
+
 def _convert_int(raw: str) -> Optional[int]:
     if raw in ("", "--"):
         return None
@@ -1274,6 +1831,20 @@ def _convert_decimal(raw: str) -> Optional[Decimal]:
     return D(raw.replace("$", ""))
 
 
+DATE_FORMAT = "%m/%d/%Y"
+TITLE_DATETIME_FORMAT = f"%I:%M %p ET, {DATE_FORMAT}"
+DATETIME_FORMAT = f"{DATE_FORMAT} %H:%M:%S"
+
+
 def _convert_date(raw: str) -> datetime.date:
     raw = raw.split(" as of ")[-1]
     return datetime.datetime.strptime(raw, DATE_FORMAT).date()
+
+
+def _convert_title_datetime(raw: str) -> datetime.datetime:
+    return datetime.datetime.strptime(raw, TITLE_DATETIME_FORMAT)
+
+
+def _convert_datetime(raw: str) -> datetime.datetime:
+    return datetime.datetime.strptime(raw, DATETIME_FORMAT)
+

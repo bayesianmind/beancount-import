@@ -37,7 +37,6 @@ from beancount.core import data
 from beancount.core import flags
 
 import beangulp
-from beangulp import mimetypes
 
 
 class BalanceType(enum.Enum):
@@ -69,9 +68,7 @@ class Importer(beangulp.Importer):
 
     def identify(self, filepath):
         # Match for a compatible MIME type.
-        if mimetypes.guess_type(filepath) not in {'application/x-ofx',
-                                                  'application/vnd.intu.qbo',
-                                                  'application/vnd.intu.qfx'}:
+        if filepath.split(".")[-1] not in {'ofx', 'qfx'}:
             return False
 
         # Match the account id.
